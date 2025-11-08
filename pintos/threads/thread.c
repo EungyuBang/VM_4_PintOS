@@ -593,6 +593,22 @@ allocate_tid (void) {
 	return tid;
 }
 
+/* compare tick function; this gets used in thread_sleep */
+bool
+cmp_wake_tick(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+    struct thread *thread_a = list_entry(a, struct thread, elem);
+    struct thread *thread_b = list_entry(b, struct thread, elem);
+
+    // First compare by wake_tick (earlier wake time comes first)
+    if (thread_a->wake_tick != thread_b->wake_tick) {
+        return thread_a->wake_tick < thread_b->wake_tick;
+    }
+
+    // If wake_tick is the same, compare by priority (higher priority comes first)
+    return thread_a->priority > thread_b->priority;
+}
+
 /* save the wake_tick to the thread and add it to the sleep_list. */
 void thread_sleep(int64_t wake_tick) {
     // Add current thread to sleep_list
@@ -605,7 +621,8 @@ void thread_sleep(int64_t wake_tick) {
 
 	if (curr != idle_thread){
 	    curr->wake_tick = wake_tick;
-		list_push_back (&sleep_list, &curr->elem);
+		list_insert_ordered(&sleep_list, &curr->elem, cmp_wake_tick, NULL);
+		// list_push_back (&sleep_list, &curr->elem);
 		// put the current thread to BLOCK
 		// WARNING: if this were to put outside intr_set_level, it will cause race condition
 		thread_block();
