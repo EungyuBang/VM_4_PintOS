@@ -75,8 +75,6 @@ sema_down (struct semaphore *sema) {
 	ASSERT (sema != NULL);
 	ASSERT (!intr_context ());
 
-
-
 	old_level = intr_disable ();
 
 	if (sema->value == 0){
@@ -316,6 +314,23 @@ cond_wait (struct condition *cond, struct lock *lock) {
 	lock_acquire (lock);
 }
 
+bool cmp_cond_priority(const struct list_elem *a,
+                       const struct list_elem *b,
+                       void *aux UNUSED) {
+    struct semaphore_elem *sa = list_entry(a, struct semaphore_elem, elem);
+    struct semaphore_elem *sb = list_entry(b, struct semaphore_elem, elem);
+
+    // 각 세마포어의 waiters 리스트에서 최고 우선순위 스레드 비교
+    // compare priority list from the semaphore waiters' list
+    struct list_elem *a_front = list_front(&sa->semaphore.waiters);
+    struct list_elem *b_front = list_front(&sb->semaphore.waiters);
+
+    struct thread *ta = list_entry(a_front, struct thread, elem);
+    struct thread *tb = list_entry(b_front, struct thread, elem);
+
+    return ta->priority < tb->priority;
+}
+
 /* If any threads are waiting on COND (protected by LOCK), then
    this function signals one of them to wake up from its wait.
    LOCK must be held before calling this function.
@@ -330,9 +345,15 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED) {
 	ASSERT (!intr_context ());
 	ASSERT (lock_held_by_current_thread (lock));
 
-	if (!list_empty (&cond->waiters))
-		sema_up (&list_entry (list_pop_front (&cond->waiters),
-					struct semaphore_elem, elem)->semaphore);
+	if (!list_empty (&cond->waiters)){
+	struct list_elem *max_elem = list_max(&cond->waiters, cmp_cond_priority, NULL);
+	// WHY remove here?
+	list_remove(max_elem);
+	struct semaphore_elem *se = list_entry(max_elem, struct semaphore_elem, elem);
+
+	sema_up (&se->semaphore);
+	}
+
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by

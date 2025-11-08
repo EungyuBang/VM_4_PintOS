@@ -630,12 +630,12 @@ cmp_wake_tick(const struct list_elem *a, const struct list_elem *b, void *aux UN
     struct thread *thread_b = list_entry(b, struct thread, elem);
 
     // First compare by wake_tick (earlier wake time comes first)
-    if (thread_a->wake_tick != thread_b->wake_tick) {
+    // if (thread_a->wake_tick != thread_b->wake_tick) {
         return thread_a->wake_tick < thread_b->wake_tick;
-    }
+    // }
 
     // If wake_tick is the same, compare by priority (higher priority comes first)
-    return thread_a->priority > thread_b->priority;
+    // return thread_a->priority > thread_b->priority;
 }
 
 /* save the wake_tick to the thread and add it to the sleep_list. */
