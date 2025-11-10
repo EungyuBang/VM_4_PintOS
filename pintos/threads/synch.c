@@ -206,9 +206,21 @@ void lock_acquire(struct lock *lock)
 		/*그 락 holder가 나보다 우선순위가 낮으면*/
 		if (lock->holder->priority < curr->priority)
 		{
-			/*donate_elem을 전달하고, 우선순위 전달*/
+			/*donate_elem을 전달하고*/
 			list_push_back(&lock->holder->donaters, &curr->donate_elem);
-			lock->holder->priority = curr->priority;
+			/*우선순위 전달(nested)*/
+			struct lock *nlock = lock; // lock과 curr를 아래서 쓰기 때문에 바꾸면 안되서 이것을 기준으로 돌도록
+			for (int i = 0; i < 8; i++)
+			{
+				if ((nlock == NULL) || (nlock->holder == NULL))
+					break;
+
+				if (nlock->holder->priority < curr->priority)
+				{
+					nlock->holder->priority = curr->priority;
+					nlock = nlock->holder->waiting_lock;
+				}
+			}
 		}
 	}
 	sema_down(&lock->semaphore);
