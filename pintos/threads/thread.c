@@ -241,7 +241,7 @@ void thread_unblock(struct thread *t)
 	enum intr_level old_level;
 
 	old_level = intr_disable();
-	list_insert_ordered(&ready_list, &t->elem, &priority_more, NULL);
+	list_push_back(&ready_list, &t->elem);
 	t->status = THREAD_READY;
 	if (thread_current()->priority < t->priority)
 	{
@@ -449,13 +449,16 @@ static void init_thread(struct thread *t, const char *name, int priority)
    empty.  (If the running thread can continue running, then it
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
+// 뺄 때 max 하도록 변경, donate 고려(테스트에는 영향 없긴함)
 static struct thread *
 next_thread_to_run(void)
 {
 	if (list_empty(&ready_list))
 		return idle_thread;
-	else
-		return list_entry(list_pop_front(&ready_list), struct thread, elem);
+
+	struct list_elem *e = list_max(&ready_list, priority_less, NULL);
+	list_remove(e);
+	return list_entry(e, struct thread, elem);
 }
 
 /* Use iretq to launch the thread */
