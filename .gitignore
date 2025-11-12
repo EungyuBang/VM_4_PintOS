@@ -13,12 +13,14 @@
 *.hex
 *.dis
 *.dump
+*.dsk
 
 # 빌드 디렉터리
 build/
 /bin/
 /obj/
 /output/
+threads/build/os.dsk
 
 # core dump
 core
@@ -32,3 +34,4 @@ core
 
 # vscode
 .vscode
+
