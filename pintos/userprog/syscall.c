@@ -99,6 +99,16 @@ syscall_handler (struct intr_frame *f) {
 
 	switch (syscall_num) {
 
+		case SYS_HALT:
+            power_off();
+            break;
+
+		case SYS_EXIT:
+			sys_exit(f->R.rdi);
+			break;
+
+
+
 		case SYS_CREATE:
 			f->R.rax = sys_create(f->R.rdi, f->R.rsi);
 			break;
@@ -111,12 +121,14 @@ syscall_handler (struct intr_frame *f) {
 			f->R.rax = sys_open(f->R.rdi);
 			break;
 
+		case SYS_FILESIZE:
+			f->R.rax = sys_filesize(f->R.rdi);
+			break;
+
 		case SYS_READ:
-
+			f->R.rax = sys_read(f->R.rdi, f->R.rsi, f->R.rdx);
 			break;
-		case SYS_CLOSE:
 
-			break;
 		case SYS_WRITE:
 			{
 				int fd = f->R.rdi;                    // First argument: file descriptor
@@ -133,16 +145,18 @@ syscall_handler (struct intr_frame *f) {
 			}
 			break;
 
-		case SYS_EXIT:
-				sys_exit(f->R.rdi);
+		case SYS_SEEK:
+
 			break;
 
-		case SYS_HALT:
-            {
-                power_off();
-                //thread_exit(); power_off하면 끝
-            }
-            break;
+		case SYS_TELL:
+
+			break;
+
+
+		case SYS_CLOSE:
+			break;
+
 		default:
 			printf("system call! (unimplemented syscall number: %d)\n", syscall_num);
 			thread_exit();
@@ -157,9 +171,10 @@ static void vaild_get_addr(void *addr){
 		sys_exit(-1);
 }
 
-static void vaild_put_addr(void *addr){
+static void vaild_put_addr(void *addr, unsigned size){
 	if(is_kernel_vaddr(addr) || addr == NULL)
 		sys_exit(-1);
+	
 	/* 나중에 put_user로 구현*/
 }
 
@@ -208,6 +223,20 @@ static int sys_open(const char *file){
 	lock_release(&file_lock);
 	return fd;
 }
+
+static int filesize(int fd){
+
+	struct file *file = thread_current()->fdtable->fdt[fd];
+
+	return file_length(file);
+}
+
+static int sys_read(int fd, void *buffer, unsigned size){
+
+
+
+}
+
 
 
 
