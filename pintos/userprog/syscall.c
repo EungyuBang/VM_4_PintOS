@@ -27,10 +27,11 @@ static bool sys_create(const char *file, unsigned initial_size);
 static bool sys_remove(const char *file);
 static int sys_open(const char *file);
 static int sys_filesize(int fd);
-
 static int sys_read(int fd, void *buffer, unsigned length);
 static int sys_write(int fd, void *buffer, unsigned length);
-static int sys_open(const char *file);
+static void sys_seek(int fd, unsigned position);
+unsigned sys_tell(int fd);
+void sys_close(int fd);
 static void sys_exit(int status);
 
 struct lock file_lock;
@@ -138,15 +139,15 @@ syscall_handler (struct intr_frame *f) {
 			break;
 
 		case SYS_SEEK:
-
+			sys_seek(f->R.rdi, f->R.rsi);
 			break;
 
 		case SYS_TELL:
-
+			f->R.rax = sys_tell(f->R.rdi);
 			break;
 
-
 		case SYS_CLOSE:
+			//sys_close(f->R.rdi);
 			break;
 
 		default:
@@ -156,12 +157,13 @@ syscall_handler (struct intr_frame *f) {
 	}
 }
 
-
+/* user 포인터 검사 */
 static void valid_get_addr(void *addr){
 	if(get_user(addr) < 0)
 		sys_exit(-1);
 }
 
+/* user 버퍼 검사 */
 static void valid_get_buffer(char *addr, unsigned length){
 	for (unsigned i = 0; i < length; i++){
 		if(get_user(addr+i) < 0)
@@ -176,7 +178,6 @@ static void valid_put_addr(char *addr, unsigned length){
 		if(put_user(addr+i, 0) == 0)
 			sys_exit(-1);
 	}
-
 }
 
 static bool sys_create(const char *file, unsigned initial_size){
@@ -204,8 +205,8 @@ static int sys_open(const char *file){
     struct file **fd_table = thread_current()->fd_table;
     lock_acquire(&file_lock);
     struct file *opened_file = filesys_open(file);
-
     if (opened_file == NULL) {
+		/* open 실패면 inode close, free(file) 해줌 */
         lock_release(&file_lock); 
         return -1;
     }
@@ -253,11 +254,10 @@ static int sys_filesize(int fd){
     return size;
 }
 
-
 static int sys_read(int fd, void *buffer, unsigned length){
 
-	vaild_put_addr(buffer, length);
-	if(fd < 0 || fd > MAXNUM_FDT)
+	valid_put_addr(buffer, length); //써보면서 확인해야함
+	if(fd < 0 || fd > FD_TABLE_SIZE || fd == 1)
 		return -1;
 
 	lock_acquire(&file_lock);
@@ -282,8 +282,8 @@ static int sys_read(int fd, void *buffer, unsigned length){
 
 static int sys_write(int fd, void *buffer, unsigned length) {
 
-	vaild_get_buffer(buffer, length);
-	if(fd <= 0 || fd > MAXNUM_FDT) //0(stdin) 불가능 1~127까지 가능해야함
+	valid_get_buffer(buffer, length); //읽기(접근) 가능을 확인해야함
+	if(fd <= 0 || fd > FD_TABLE_SIZE) //0(stdin) 불가능 1~127까지 가능해야함
 		return -1;
 
 	if (fd == 1) {
@@ -302,6 +302,40 @@ static int sys_write(int fd, void *buffer, unsigned length) {
 		lock_release(&file_lock);
 		return size;   
 	}
+}
+
+/* 반환값이 없으면 문제 생기면 그냥 exit 시킨다. */
+static void sys_seek(int fd, unsigned position) {
+
+	if(fd < 2 || fd > FD_TABLE_SIZE)
+		sys_exit(-1);
+
+	struct file *file = thread_current()->fd_table[fd];
+	if(file == NULL)
+		sys_exit(-1);
+
+	lock_acquire(&file_lock);
+	file_seek(file, position);
+	lock_release(&file_lock);
+}
+
+unsigned sys_tell(int fd){
+
+	if(fd < 2 || fd > FD_TABLE_SIZE)
+		return -1;
+
+	struct file *file = thread_current()->fd_table[fd];
+	if(file == NULL)
+		return -1;
+
+	lock_acquire(&file_lock);
+	unsigned size = file_tell(file);
+	lock_release(&file_lock);
+	return size;
+}
+
+void sys_close(int fd) {
+
 }
 
 static void sys_exit(int status){
