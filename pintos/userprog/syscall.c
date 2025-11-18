@@ -13,6 +13,8 @@
 #include "include/filesys/filesys.h"
 #include "filesys/file.h"
 #include "filesys/inode.h"
+#include "userprog/process.h"
+#include "include/threads/palloc.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -30,9 +32,10 @@ static int sys_filesize(int fd);
 static int sys_read(int fd, void *buffer, unsigned length);
 static int sys_write(int fd, void *buffer, unsigned length);
 static void sys_seek(int fd, unsigned position);
-unsigned sys_tell(int fd);
+static unsigned sys_tell(int fd);
 static void sys_close(int fd);
 static void sys_exit(int status);
+static int sys_exec(const char *cmd_line);
 
 struct lock file_lock;
 
@@ -112,7 +115,10 @@ syscall_handler (struct intr_frame *f) {
 			sys_exit(f->R.rdi);
 			break;
 
-
+		case SYS_EXEC:
+			if(sys_exec(f->R.rdi) < 0)
+				sys_exit(-1);
+			break;
 
 		case SYS_CREATE:
 			f->R.rax = sys_create(f->R.rdi, f->R.rsi);
@@ -177,6 +183,21 @@ static void valid_put_addr(char *addr, unsigned length){
 	char *end = addr + length -1;
 	if(put_user(addr, 0) == 0 || put_user(end, 0) == 0)
 		sys_exit(-1);
+}
+
+static int sys_exec(const char *cmd_line){
+
+	valid_get_addr(cmd_line);
+
+	char *fn_copy = palloc_get_page(PAL_ZERO);
+	if (fn_copy == NULL)
+		return -1;
+
+	strlcpy(fn_copy, cmd_line, PGSIZE);
+
+	if(process_exec (fn_copy) < 0) {
+		return -1;
+	}
 }
 
 static bool sys_create(const char *file, unsigned initial_size){
@@ -341,7 +362,7 @@ static void sys_seek(int fd, unsigned position) {
 	lock_release(&file_lock);
 }
 
-unsigned sys_tell(int fd){
+static unsigned sys_tell(int fd){
 
 	if(fd < 2 || fd > FD_TABLE_SIZE)
 		return -1;

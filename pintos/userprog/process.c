@@ -84,14 +84,29 @@ initd (void *f_name) {
 	NOT_REACHED ();
 }
 
+struct forkarg {
+	struct intr_frame *f;
+	struct thread *t;
+};
+
+
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
 tid_t
-process_fork (const char *name, struct intr_frame *if_ UNUSED) {
+process_fork (const char *name, struct intr_frame *if_) {
+
+	struct forkarg *fork = calloc(1, sizeof(struct forkarg));
+	fork->f = if_;
+	fork->t = thread_current();
 	/* Clone current thread to new thread.*/
-	return thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
+	tid_t id = thread_create (name, PRI_DEFAULT, __do_fork, fork);
+
+	if (id == thread_current()->tid)
+		return 0;
+	else
+		return id;
 }
+
 
 #ifndef VM
 /* Duplicate the parent's address space by passing this function to the
@@ -107,6 +122,7 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
 
 	/* 2. Resolve VA from the parent's page map level 4. */
+	/* */
 	parent_page = pml4_get_page (parent->pml4, va);
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
@@ -131,11 +147,12 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
  *       this function. */
 static void
 __do_fork (void *aux) {
+	struct forkarg *args = aux;
 	struct intr_frame if_;
-	struct thread *parent = (struct thread *) aux;
+	struct thread *parent = (struct thread *) args->t;
 	struct thread *current = thread_current ();
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if;
+	struct intr_frame *parent_if = args->f;
 	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
@@ -152,6 +169,8 @@ __do_fork (void *aux) {
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
 		goto error;
 #else
+	/*  주어진 pml4에 존재하는 모든 페이지 테이블 엔트리를 순회하며 func 호출
+		func가 false를 리턴하면 멈추고 false 리턴*/
 	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))
 		goto error;
 #endif
@@ -163,6 +182,12 @@ __do_fork (void *aux) {
 	 * TODO:       the resources of parent.*/
 
 	process_init ();
+
+	/* fdt 복제 */
+	/* if 확장 시 수정 필요 */
+	for (int i =2; i >FD_TABLE_SIZE; i++){
+		current->fd_table[i] = file_duplicate(parent->fd_table[i]);
+	}
 
 	/* Finally, switch to the newly created process. */
 	if (succ)
@@ -285,7 +310,6 @@ process_exit (void) {
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
-	/* 나중에 close구현하면 그거 호출하는 방식으로 바꾸자. lock 여기 추가하기 번거롭다.*/
 	if (curr->fd_table != NULL) {
         for (int i = 2; i < FD_TABLE_SIZE; i++) {
             if (curr->fd_table[i] != NULL) {
