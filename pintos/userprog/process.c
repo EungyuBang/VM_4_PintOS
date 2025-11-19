@@ -22,6 +22,8 @@
 #include "vm/vm.h"
 #endif
 
+#include "include/threads/synch.h"
+
 static void process_cleanup (void);
 static bool load (const char **argv, int argc, struct intr_frame *if_);
 static void initd (void *f_name);
@@ -87,6 +89,8 @@ initd (void *f_name) {
 struct forkarg {
 	struct intr_frame *f;
 	struct thread *t;
+	struct semaphore forksema;
+	bool success;
 };
 
 
@@ -98,19 +102,34 @@ process_fork (const char *name, struct intr_frame *if_) {
 	struct forkarg *fork = calloc(1, sizeof(struct forkarg));
 	fork->f = if_;
 	fork->t = thread_current();
+	sema_init(&fork->forksema, 0);
+
 	/* Clone current thread to new thread.*/
 	tid_t id = thread_create (name, PRI_DEFAULT, __do_fork, fork);
+	if(id == TID_ERROR)
+		return TID_ERROR;
 
-	if (id == thread_current()->tid)
-		return 0;
-	else
+	// __do_fork 결과 확인용
+	sema_down(&fork->forksema);
+
+	if(fork->success)
 		return id;
+	else
+		return TID_ERROR;
 }
-
 
 #ifndef VM
 /* Duplicate the parent's address space by passing this function to the
  * pml4_for_each. This is only for the project 2. */
+/* 부모의 각 유저 PTE를 자식에게 복제.*/
+/* 1. aux로 받은 부모 스레드의 pml4에서 va 대응 물리 페이지를 pml4_get_page로 구해온다
+	(커널 페이지라면 건너 뛰기)
+   2. 자식용 유저페이지를 새로 할당. 부모 페이지 내용을 복사
+   3. 부모 PTE의 writable 비트에 따라 writeable 설정
+   4. 자식의 pml4에 pml4_set_page(current->pml4, va, newpage, writable)
+   	  로 매핑. 실패 시 할당 해제 등 처리.*/
+
+/* pte : va를 가리키는 페이지테이블 엔트리 포인터(물리 페이지 주소 + 플래그가 담김) */
 static bool
 duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	struct thread *current = thread_current ();
@@ -120,21 +139,29 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	bool writable;
 
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
+	if(is_kern_pte(pte))
+		return true;	// 커널 매핑이면 false 반환이 아니라 건너 뛰어야함.
 
 	/* 2. Resolve VA from the parent's page map level 4. */
-	/* */
+	/* pml4에서 va가 가리키는 물리주소와 매핑된 커널 가상주소(물리주소+KERN_BASE) 반환.*/
 	parent_page = pml4_get_page (parent->pml4, va);
 
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
-
+	newpage = palloc_get_page(PAL_USER | PAL_ZERO);
+	if(newpage == NULL)
+		return false;
+		
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
+	memcpy(newpage, parent_page, PGSIZE);
 
 	/* 5. Add new page to child's page table at address VA with WRITABLE
 	 *    permission. */
+	writable = is_writable(pte);
 	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
+		return false;
 		/* 6. TODO: if fail to insert page, do error handling. */
 	}
 	return true;
@@ -183,16 +210,31 @@ __do_fork (void *aux) {
 
 	process_init ();
 
-	/* fdt 복제 */
-	/* if 확장 시 수정 필요 */
-	for (int i =2; i >FD_TABLE_SIZE; i++){
-		current->fd_table[i] = file_duplicate(parent->fd_table[i]);
+	/* fdt 복사, 나중에 fdt 타입 바꾸면 수정 필요 */
+	for (int i = 2; i < FD_TABLE_SIZE; i++) {
+		struct file *file = parent->fd_table[i];
+		if (file == NULL)
+			continue;
+
+		lock_acquire(&file_lock);
+		struct file *dup = file_duplicate(file);
+		lock_release(&file_lock);
+		if (dup == NULL)
+			goto error;	//반환하면 안됨
+
+		current->fd_table[i] = dup;
 	}
 
 	/* Finally, switch to the newly created process. */
-	if (succ)
+	if (succ){
+		args->success = true;
+		if_.R.rax = 0;	//자식은 0 반환
+		sema_up(&args->forksema);
 		do_iret (&if_);
+	}
 error:
+	args->success = false;
+	sema_up(&args->forksema);
 	thread_exit ();
 }
 

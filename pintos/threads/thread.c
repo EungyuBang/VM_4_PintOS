@@ -212,9 +212,9 @@ tid_t thread_create(const char *name, int priority,
 	thread_unblock(t);
 
 	// if new thread has the higher priority than the current one
-	if (t->priority > thread_current()->priority) {
-		thread_yield();
-	}
+	// if (t->priority > thread_current()->priority) {
+	// 	thread_yield();
+	// }
 
 	return tid;
 }

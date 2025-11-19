@@ -27,6 +27,10 @@ static void valid_put_addr(char *addr, unsigned length);
 //syscall 함수화
 static bool sys_create(const char *file, unsigned initial_size);
 static bool sys_remove(const char *file);
+
+static int sys_fork(const char *thread_name, struct intr_frame *f);
+static int sys_exec(const char *cmd_line);
+
 static int sys_open(const char *file);
 static int sys_filesize(int fd);
 static int sys_read(int fd, void *buffer, unsigned length);
@@ -35,7 +39,7 @@ static void sys_seek(int fd, unsigned position);
 static unsigned sys_tell(int fd);
 static void sys_close(int fd);
 static void sys_exit(int status);
-static int sys_exec(const char *cmd_line);
+
 
 struct lock file_lock;
 
@@ -115,9 +119,17 @@ syscall_handler (struct intr_frame *f) {
 			sys_exit(f->R.rdi);
 			break;
 
+		case SYS_FORK:
+			f->R.rax = sys_fork(f->R.rdi, f);
+			break;
+
 		case SYS_EXEC:
 			if(sys_exec(f->R.rdi) < 0)
 				sys_exit(-1);
+			break;
+
+		case SYS_WAIT:
+			
 			break;
 
 		case SYS_CREATE:
@@ -183,6 +195,13 @@ static void valid_put_addr(char *addr, unsigned length){
 	char *end = addr + length -1;
 	if(put_user(addr, 0) == 0 || put_user(end, 0) == 0)
 		sys_exit(-1);
+}
+
+static int sys_fork (const char *thread_name, struct intr_frame *f){
+
+	valid_get_addr(thread_name);
+
+	return process_fork(thread_name, f);
 }
 
 static int sys_exec(const char *cmd_line){
