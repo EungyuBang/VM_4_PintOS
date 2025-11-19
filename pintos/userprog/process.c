@@ -102,7 +102,11 @@ process_fork (const char *name, struct intr_frame *if_) {
 	struct forkarg *fork = calloc(1, sizeof(struct forkarg));
 	fork->f = if_;
 	fork->t = thread_current();
-	sema_init(&fork->forksema, 0);
+	sema_init(&fork->forksema, 0); //__do_fork 결과 확인용
+
+	
+
+
 
 	/* Clone current thread to new thread.*/
 	tid_t id = thread_create (name, PRI_DEFAULT, __do_fork, fork);
@@ -331,6 +335,11 @@ process_exec (void *f_name) {
  *
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
+
+/* TID인 스레드가 죽을때까지 기다리기 그리고 그 자식의 exit status를 반환
+	자식이 커널에 의해 종료된 경우 -1 반환
+	TID가 유효하지 않거나, 자식이 아니거나,
+	주어진 TID에 대해 process_wait()가 이미 성공적으로 호출된 경우 -1을 반환*/
 int
 process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you

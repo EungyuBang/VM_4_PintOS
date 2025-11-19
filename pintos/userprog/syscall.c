@@ -129,7 +129,7 @@ syscall_handler (struct intr_frame *f) {
 			break;
 
 		case SYS_WAIT:
-			
+
 			break;
 
 		case SYS_CREATE:
@@ -195,6 +195,11 @@ static void valid_put_addr(char *addr, unsigned length){
 	char *end = addr + length -1;
 	if(put_user(addr, 0) == 0 || put_user(end, 0) == 0)
 		sys_exit(-1);
+}
+
+static void sys_exit(int status){
+	thread_current()->exit_status = status;
+	thread_exit();
 }
 
 static int sys_fork (const char *thread_name, struct intr_frame *f){
@@ -394,9 +399,4 @@ static unsigned sys_tell(int fd){
 	unsigned size = file_tell(file);
 	lock_release(&file_lock);
 	return size;
-}
-
-static void sys_exit(int status){
-	thread_current()->exit_status = status;
-	thread_exit();
 }
