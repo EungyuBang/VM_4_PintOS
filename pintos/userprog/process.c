@@ -50,7 +50,7 @@ process_init (void) {
  * thread id, or TID_ERROR if the thread cannot be created.
  * Notice that THIS SHOULD BE CALLED ONCE. */
 
-struct initd{
+struct initd_arg{
 	char *fn_copy;
 	struct child *c;
 };
@@ -63,8 +63,8 @@ process_create_initd (const char *file_name) {
     if (c == NULL)
         return TID_ERROR;
 	
-    struct initd *i = calloc (1, sizeof(struct initd));
-    if (i == NULL){
+    struct initd_arg *initd_arg = calloc (1, sizeof(struct initd_arg));
+    if (initd_arg == NULL){
 		free(c);
 		return TID_ERROR;
 	}
@@ -77,7 +77,7 @@ process_create_initd (const char *file_name) {
 	fn_copy = palloc_get_page (0);
 	if (fn_copy == NULL){
 		free(c);
-		free(i);
+		free(initd_arg);
 		return TID_ERROR;
 	}
 	strlcpy (fn_copy, file_name, PGSIZE);
@@ -87,14 +87,17 @@ process_create_initd (const char *file_name) {
 	char* save_ptr;
 	file_name = strtok_r (file_name, " ", &save_ptr);
 
-	i->fn_copy = fn_copy;
-	i->c = c;
+	/* initd 인자 전달 세팅 */
+	initd_arg->fn_copy = fn_copy;
+	initd_arg->c = c;
+	sema_init(&c->wait_sema, 0);	// 먼저 sema_init 해야함!! 
+
 	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, i);
+	tid = thread_create (file_name, PRI_DEFAULT, initd, initd_arg);
 	if (tid == TID_ERROR){
 		palloc_free_page (fn_copy);
 		free(c);
-		free(i);
+		free(initd_arg);
 		return TID_ERROR;
 	}
 
@@ -102,7 +105,6 @@ process_create_initd (const char *file_name) {
 	c->child_tid = tid;
 	c->exit_status = -1;
 	c->waited = false;
-	sema_init(&c->wait_sema, 0);
 	list_push_back(&parent->child_list, &c->child_elem);
 
 	return tid;
@@ -116,10 +118,12 @@ initd (void *aux) {
 #endif
 
 	/* initd 스레드의 child 구조체 생성 */
-	struct initd *i = aux;
+	struct initd_arg *i = aux;
     struct child *child = i->c;
     char *file_name = i->fn_copy;
     free(i);	// aux로 전달된 구조체 free
+
+	//exit시 child_info 접근(sema_up, exit_status) 하기 때문에 여기서 해야함
 	thread_current()->child_info = child;
 
 	process_init ();
