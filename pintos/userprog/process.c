@@ -434,7 +434,7 @@ process_wait (tid_t child_tid UNUSED) {
 	if(target == NULL || target->waited == true)
 		return -1;
 
-	target->waited == true;
+	target->waited = true;
 	sema_down(&target->wait_sema);
 
 	int exit_status = target->exit_status;	//커널에 의해 강제 종료된 경우는 -1이 들어있음
