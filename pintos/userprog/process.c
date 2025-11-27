@@ -25,7 +25,7 @@
 #include "vm/vm.h"
 #endif
 
-/*test*/
+
 struct fork_struct {
 	struct thread *parent;
 	struct intr_frame parent_if;
