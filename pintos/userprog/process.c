@@ -219,12 +219,14 @@ __do_fork (void *aux) {
 		goto error;
 #endif
 	// 3. FD 도 복제
+	lock_acquire(&filesys_lock);
 	for(int i = 2 ; i < FDT_LIMIT ; i++) {
 		struct file *file = parent->fd_table[i];
 		if(file != NULL) {
 			child->fd_table[i] = file_duplicate(file);
 		}
 	}
+	lock_release(&filesys_lock);
 
 	// 10주차 rox
 	// 부모가 현재 실행중인 파일이 있다면
