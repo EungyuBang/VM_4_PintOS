@@ -1,0 +1,10 @@
+{
+  "files.associations": {
+    "syscall-nr.h": "c",
+    "atomic": "c",
+    "*.inc": "c",
+    "pintos": "c",
+    "interrupt.h": "c",
+    "init.h": "c"
+  }
+}
