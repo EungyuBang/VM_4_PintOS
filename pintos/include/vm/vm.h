@@ -46,6 +46,8 @@ struct page {
 	struct frame *frame;   /* Back reference for frame */
 
 	/* Your implementation */
+	struct hash_elem hash_elem;
+	bool writable; 	//쓰기 권한 위해 사용
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -60,6 +62,7 @@ struct page {
 };
 
 /* The representation of "frame" */
+//물리적 메모리를 나타내는 구조 프레임
 struct frame {
 	void *kva;
 	struct page *page;
@@ -85,6 +88,9 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
+
+
+
 };
 
 #include "threads/thread.h"
