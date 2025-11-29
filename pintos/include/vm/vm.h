@@ -2,6 +2,8 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
+// 해시 테이블 사용 위해 추가
+#include "lib/kernel/hash.h"
 
 enum vm_type {
 	/* page not initialized */
@@ -40,18 +42,25 @@ struct thread;
  * This is kind of "parent class", which has four "child class"es, which are
  * uninit_page, file_page, anon_page, and page cache (project4).
  * DO NOT REMOVE/MODIFY PREDEFINED MEMBER OF THIS STRUCTURE. */
+ // 11주차 가상 메모리 page
 struct page {
 	const struct page_operations *operations;
 	void *va;              /* Address in terms of user space */
 	struct frame *frame;   /* Back reference for frame */
 
 	/* Your implementation */
-
+	// 11주차 해시테이블
+	struct hash_elem hash_elem;
+	// 11주차 
+	bool writable;
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
 	union {
+		// 초기화 정보가 필요할 때 사용
 		struct uninit_page uninit;
+		// 스왑 정보가 필요할 때 사용
 		struct anon_page anon;
+		// 파일 정보가 필요할 때 사용
 		struct file_page file;
 #ifdef EFILESYS
 		struct page_cache page_cache;
@@ -60,6 +69,7 @@ struct page {
 };
 
 /* The representation of "frame" */
+// 11주차 물리 메모리 frame
 struct frame {
 	void *kva;
 	struct page *page;
@@ -84,7 +94,9 @@ struct page_operations {
 /* Representation of current process's memory space.
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
+// 11주차 supplemental_page_table 구조체 (spt)
 struct supplemental_page_table {
+	struct hash pages;
 };
 
 #include "threads/thread.h"

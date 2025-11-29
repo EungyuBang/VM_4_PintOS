@@ -358,6 +358,7 @@ process_wait (tid_t child_tid UNUSED) {
 }
 
 /* Exit the process. This function is called by thread_exit (). */
+// 수정
 void
 process_exit (void) {
 	// 현재 쓰레드의 주체는 자식 쓰레드
@@ -365,7 +366,10 @@ process_exit (void) {
 
 	// 쓰레드 죽기 전에, 파일 디스크립터 정리
 	 if(cur_thread->fd_table != NULL) {
-		lock_acquire(&filesys_lock);
+		// lock_acquire(&filesys_lock);
+		bool lock_held = lock_held_by_current_thread(&filesys_lock);
+
+		if(!lock_held) lock_acquire(&filesys_lock);
 		// 반복문으로 해제하는 이유 -> 해당 쓰레드가 열었던 모든 파일을 닫아야 하기 때문에
 		for(int fd= 2; fd < FDT_LIMIT; fd++) {
 			if(cur_thread->fd_table[fd] != NULL) {
@@ -373,17 +377,23 @@ process_exit (void) {
 				cur_thread->fd_table[fd] = NULL;
 			}
 		}
-		lock_release(&filesys_lock);
+		// lock_release(&filesys_lock);
+		if(!lock_held) lock_release(&filesys_lock);
 		palloc_free_page(cur_thread->fd_table);
 		cur_thread->fd_table = NULL;
 	 }
 
 	// 10주차 rox
 	 if (cur_thread->running_file != NULL) {
-      lock_acquire(&filesys_lock);
-			// exit 전 열려있던 파일 닫아줌 (이때 deny_write 도 allow_write 로 변경됨)
+      // lock_acquire(&filesys_lock);
+			// // exit 전 열려있던 파일 닫아줌 (이때 deny_write 도 allow_write 로 변경됨)
+      // file_close(cur_thread->running_file);
+      // lock_release(&filesys_lock);
+      // cur_thread->running_file = NULL;
+			bool lock_held = lock_held_by_current_thread(&filesys_lock);
+      if (!lock_held) lock_acquire(&filesys_lock);  
       file_close(cur_thread->running_file);
-      lock_release(&filesys_lock);
+      if (!lock_held) lock_release(&filesys_lock);  
       cur_thread->running_file = NULL;
    } 
 	
@@ -780,6 +790,7 @@ static bool install_page (void *upage, void *kpage, bool writable);
  *
  * Return true if successful, false if a memory allocation error
  * or disk read error occurs. */
+
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
@@ -862,11 +873,34 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
+ // load_segment 에서 lazy_load_segment 로 넘길 구조체 
+struct lazy_load_info 
+{
+	struct file *file;
+	off_t ofs;
+	uint32_t read_bytes;
+	uint32_t zero_bytes;
+};
+
 static bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+
+	struct lazy_load_info *info = (struct lazy_load_info *)aux; 
+
+	file_seek(info->file, info->ofs);
+
+	if(file_read(info->file, page->frame->kva, info->read_bytes) != (int)info->read_bytes) {
+		palloc_free_page(page->frame->kva);
+		free(info);
+		return false;
+	}
+	memset(page->frame->kva + info->read_bytes, 0, info->zero_bytes);
+
+	free(info);
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -883,9 +917,10 @@ lazy_load_segment (struct page *page, void *aux) {
  *
  * Return true if successful, false if a memory allocation error
  * or disk read error occurs. */
+// 11주차 1 load 함수 내부에서 load_segment 함수 호출해서 여기로 온다 -> vm_alloc_page_with_initializer 호출해서 spt에 메타데이터 담는다
 static bool
-load_segment (struct file *file, off_t ofs, uint8_t *upage,
-		uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
+load_segment (struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+{
 	ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
 	ASSERT (pg_ofs (upage) == 0);
 	ASSERT (ofs % PGSIZE == 0);
@@ -898,30 +933,57 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
-			return false;
+		struct lazy_load_info *aux = (struct lazy_load_info *)malloc(sizeof(struct lazy_load_info));
+		if(aux == NULL) return false;
 
-		/* Advance. */
+		// lazy_load_segment 로 넘길 정보 저장
+		aux->file = file;
+		aux->ofs = ofs;
+		aux->read_bytes = page_read_bytes;
+		aux->zero_bytes = page_zero_bytes;
+
+		// vm_alloc_page_with_initializer 실패시 메모리 해제 + false 반환 
+		if(!vm_alloc_page_with_initializer(VM_FILE, upage, writable, lazy_load_segment, aux)) {
+			free(aux);
+			return false;
+		}
+
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		ofs += page_read_bytes;
 	}
 	return true;
 }
 
 /* Create a PAGE of stack at the USER_STACK. Return true on success. */
+// static bool
+// setup_stack (struct intr_frame *if_) {
+// 	bool success = false;
+// 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
+
+// 	/* TODO: Map the stack on stack_bottom and claim the page immediately.
+// 	 * TODO: If success, set the rsp accordingly.
+// 	 * TODO: You should mark the page is stack. */
+// 	/* TODO: Your code goes here */
+
+// 	return success;
+// }
 static bool
 setup_stack (struct intr_frame *if_) {
 	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
+	/* 1. 스택 페이지 생성 (VM_MARKER_0 추가) */
+	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
+		
+		/* 2. 즉시 할당 (스택은 바로 씀) */
+		success = vm_claim_page (stack_bottom);
 
+		if (success) {
+			if_->rsp = USER_STACK;
+		}
+	}
 	return success;
 }
 #endif /* VM */

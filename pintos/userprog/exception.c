@@ -121,6 +121,8 @@ kill (struct intr_frame *f) {
    can find more information about both of these in the
    description of "Interrupt 14--Page Fault Exception (#PF)" in
    [IA32-v3a] section 5.15 "Exception and Interrupt Reference". */
+
+	 // 수정 
 static void
 page_fault (struct intr_frame *f) {
 	bool not_present;  /* True: not-present page, false: writing r/o page. */
@@ -132,7 +134,9 @@ page_fault (struct intr_frame *f) {
 	   accessed to cause the fault.  It may point to code or to
 	   data.  It is not necessarily the address of the instruction
 	   that caused the fault (that's f->rip). */
-
+	
+	// 11주차 하드웨어가 페이지 폴트 당시 실패한 va를 임시로 저장하는 레지스터 -> rcr2
+	// 그래서 fault_addr = rcr2 인거임
 	fault_addr = (void *) rcr2();
 
 	/* Turn interrupts back on (they were only off so that we could
@@ -153,6 +157,14 @@ page_fault (struct intr_frame *f) {
 
 	/* Count page faults. */
 	page_fault_cnt++;
+
+	if(!user) {
+		struct thread *cur_thread = thread_current();
+		cur_thread->exit_status = -1;
+	  printf ("%s: exit(%d)\n", cur_thread->name, -1);		
+		thread_exit();
+		return;
+	}
 
 	/* If the fault is true fault, show info and exit. */
 	printf ("Page fault at %p: %s error %s page in %s context.\n",
