@@ -16,8 +16,8 @@ test_main (void)
 {
   int handle;
 
-  CHECK (create ("sample.txt", sizeof sample), "create \"sample.txt\"");
-  CHECK ((handle = open ("sample.txt")) > 1, "open \"sample.txt\"");
+  CHECK (create ("sample.txt", sizeof sample), "create \"sample.txt\"");  //빈 파일을 만든다.
+  CHECK ((handle = open ("sample.txt")) > 1, "open \"sample.txt\"");  //
   CHECK (mmap (ACTUAL, sizeof sample, 1, handle, 0) != MAP_FAILED, "mmap \"sample.txt\"");
   memcpy (ACTUAL, sample, sizeof sample);
 }

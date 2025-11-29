@@ -7,6 +7,7 @@ struct page;
 enum vm_type;
 
 struct file_page {
+	/* TODO(vm): 파일 매핑 정보를 유지할 필드를 정의한다. */
 };
 
 void vm_file_init (void);

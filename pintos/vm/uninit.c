@@ -1,11 +1,10 @@
-/* uninit.c: Implementation of uninitialized page.
+/* uninit.c: 미초기화 페이지 구현체.
  *
- * All of the pages are born as uninit page. When the first page fault occurs,
- * the handler chain calls uninit_initialize (page->operations.swap_in).
- * The uninit_initialize function transmutes the page into the specific page
- * object (anon, file, page_cache), by initializing the page object,and calls
- * initialization callback that passed from vm_alloc_page_with_initializer
- * function.
+ * 모든 페이지는 미초기화 상태로 태어난다. 첫 페이지 폴트가 발생하면
+ * 핸들러 체인이 uninit_initialize(page->operations.swap_in)를 호출한다.
+ * uninit_initialize 함수는 페이지 객체를 초기화해 anon/file/page_cache 등의
+ * 구체 페이지 객체로 변환하고, vm_alloc_page_with_initializer에서 전달된
+ * 초기화 콜백을 호출한다.
  * */
 
 #include "vm/vm.h"
@@ -14,7 +13,7 @@
 static bool uninit_initialize (struct page *page, void *kva);
 static void uninit_destroy (struct page *page);
 
-/* DO NOT MODIFY this struct */
+/* 이 구조체는 수정하지 않는다. */
 static const struct page_operations uninit_ops = {
 	.swap_in = uninit_initialize,
 	.swap_out = NULL,
@@ -22,7 +21,7 @@ static const struct page_operations uninit_ops = {
 	.type = VM_UNINIT,
 };
 
-/* DO NOT MODIFY this function */
+/* 이 함수는 수정하지 않는다. */
 void
 uninit_new (struct page *page, void *va, vm_initializer *init,
 		enum vm_type type, void *aux,
@@ -32,7 +31,7 @@ uninit_new (struct page *page, void *va, vm_initializer *init,
 	*page = (struct page) {
 		.operations = &uninit_ops,
 		.va = va,
-		.frame = NULL, /* no frame for now */
+		.frame = NULL, /* 아직 프레임이 없음 */
 		.uninit = (struct uninit_page) {
 			.init = init,
 			.type = type,
@@ -42,27 +41,27 @@ uninit_new (struct page *page, void *va, vm_initializer *init,
 	};
 }
 
-/* Initalize the page on first fault */
+/* 첫 폴트 시 페이지를 초기화한다. */
 static bool
 uninit_initialize (struct page *page, void *kva) {
 	struct uninit_page *uninit = &page->uninit;
 
-	/* Fetch first, page_initialize may overwrite the values */
+	/* page_initialize가 값을 덮어쓸 수 있으니 먼저 꺼낸다. */
 	vm_initializer *init = uninit->init;
 	void *aux = uninit->aux;
 
-	/* TODO: You may need to fix this function. */
+	/* TODO: 필요하다면 이 함수를 수정한다. */
 	return uninit->page_initializer (page, uninit->type, kva) &&
 		(init ? init (page, aux) : true);
 }
 
-/* Free the resources hold by uninit_page. Although most of pages are transmuted
- * to other page objects, it is possible to have uninit pages when the process
- * exit, which are never referenced during the execution.
- * PAGE will be freed by the caller. */
+/* uninit_page가 들고 있는 자원을 해제한다. 대부분의 페이지가 다른 타입으로
+ * 변환되지만, 실행 중 한 번도 참조되지 않아 프로세스 종료 시까지 남아 있는
+ * 미초기화 페이지가 있을 수도 있다.
+ * PAGE 메모리 자체는 호출자가 해제한다. */
 static void
 uninit_destroy (struct page *page) {
 	struct uninit_page *uninit UNUSED = &page->uninit;
-	/* TODO: Fill this function.
-	 * TODO: If you don't have anything to do, just return. */
+	/* TODO: 필요한 동작이 있다면 구현한다.
+	 * TODO: 할 일이 없다면 그냥 반환한다. */
 }

@@ -210,8 +210,8 @@ __do_fork (void *aux) {
 	// 새 주소 공간 활성화
 	process_activate (child);
 #ifdef VM
-	supplemental_page_table_init (&current->spt);
-	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
+	supplemental_page_table_init (&child->spt);
+	if (!supplemental_page_table_copy (&child->spt, &parent->spt))
 		goto error;
 #else
 // 부모의 pml4 를 처음부터 끝까지 훑으면서, 유효한 페이지가 나올 때마다 duplicate_pte 함수 실행
