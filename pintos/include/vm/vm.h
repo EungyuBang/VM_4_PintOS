@@ -44,6 +44,7 @@ struct page {
 	const struct page_operations *operations;
 	void *va;              /* 유저 공간 기준 주소 */
 	struct frame *frame;   /* 이 페이지를 가리키는 프레임 */
+	bool writable; /* MOD1 */
 
 	/* 구현체가 확장해 쓰는 공간 */
 	struct hash_elem spt_elem; /* SPT 조회용 해시 테이블 요소 */

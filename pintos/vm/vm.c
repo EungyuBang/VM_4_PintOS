@@ -59,25 +59,53 @@ page_less(const struct hash_elem *a,
     return pa->va < pb->va;
 }
 
+/*MOD2*/
 /* 초기화 정보가 있는 지연 페이지 객체를 생성한다.
  * 새 페이지를 만들고 싶다면 직접 만들지 말고 이 함수나 `vm_alloc_page`를 거친다. */
 bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
 
-	ASSERT (VM_TYPE(type) != VM_UNINIT)
-
+	ASSERT (VM_TYPE(type) != VM_UNINIT);
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 
 	/* upage가 이미 다른 페이지에 점유돼 있는지 확인한다. */
-	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: 페이지를 만들고 VM 타입에 맞는 초기화기를 찾아 uninit_new로
-		 * TODO: "미초기화" 페이지를 구성한다. 호출 이후 필요한 필드를 채운다. */
-
-		/* TODO: spt에 페이지를 삽입한다. */
+	upage = pg_round_down(upage);
+	if(spt_find_page(spt, upage)) {
+		return false;
 	}
-err:
-	return false;
+
+	struct page *page = malloc(sizeof(struct page));
+	if(page == NULL) {
+		return false;
+	}
+
+	/* 초기화 함수 하나를 담아두는 변수
+	익명 페이지면 page_init = anon_initializer
+	파일 페이지면 page_init = file_backed_initializer*/
+	bool (*page_init)(struct page *, enum vm_type, void *kva) = NULL;
+	switch (VM_TYPE(type)) {
+		case VM_ANON:
+			page_init = anon_initializer;
+			break;
+		case VM_FILE:
+			page_init = file_backed_initializer;
+			break;
+		default:
+			free(page);
+			return false;
+	}
+	
+	/* 페이지를 만들고 VM 타입에 맞는 초기화기를 찾아 uninit_new로
+	* "미초기화" 페이지를 구성한다. 호출 이후 필요한 필드를 채운다. */
+	uninit_new(page, upage, init, type, aux, page_init);
+	page->writable = writable;
+	/* spt에 페이지를 삽입한다. */
+	if(!spt_insert_page(spt, page)) {
+		vm_dealloc_page(page);
+		return false;
+	}
+	return true;
 }
 
 /* SPT에서 VA를 찾아 페이지를 반환한다. 실패하면 NULL을 돌려준다. */
@@ -143,16 +171,37 @@ vm_evict_frame (void) {
 	return NULL;
 }
 
+/* MOD3 */
 /* palloc()으로 프레임을 얻는다. 만약 가용 페이지가 없다면 하나를 축출해 반환한다.
- * 항상 유효한 주소를 반환해야 하며, 사용자 풀 메모리가 가득 차면 프레임을 축출해
- * 빈 공간을 마련한다. */
+ * kva와 frame을 일단 연결만 해 둔다. */
 static struct frame *
 vm_get_frame (void) {
 	struct frame *frame = NULL;
-	/* TODO: 이 함수를 완성한다. */
+	
+	/*user pool에서 물리 페이지, 4kb 사용자 풀 페이지를 받아옴*/
+	void *kva = palloc_get_page (PAL_USER);
+	
+	/*todo 프레임 대체 로직 추가*/
+	if(kva == NULL) {
+		PANIC("todo");
+	}
 
-	ASSERT (frame != NULL);
-	ASSERT (frame->page == NULL);
+	/*
+	frame은 kva 물리 페이지를 관리하기 위한 메타데이터
+	프레임 메타 할당 실패 시 페이지 반환
+	*/
+	frame = malloc(sizeof(*frame));
+	if(frame == NULL) {
+		palloc_free_page(kva);
+		PANIC("todo");
+	}
+
+	/*
+	frame->kva: 방금 할당한 실제 메모리의 커널 가상주소
+	frame->page: 어느 가상 페이지(struct page)가 이 프레임을 쓰는지 연결
+	*/
+	frame->kva = kva;
+	frame->page = NULL;
 	return frame;
 }
 
@@ -186,16 +235,19 @@ vm_dealloc_page (struct page *page) {
 	free (page);
 }
 
-/* 해당 VA에 할당된 페이지를 클레임한다. */
+/* MOD5*/
+/* 주어진 VA에 대해 SPT에서 page를 찾아서 있으면 vm_do_claim_page로 넘김 */
 bool
-vm_claim_page (void *va UNUSED) {
-	struct page *page = NULL;
-	/* TODO: 이 함수를 완성한다. */
-
+vm_claim_page (void *va) {
+	struct page *page = spt_find_page (&thread_current ()->spt, va);
+	if (page == NULL) {
+		return false;
+	}
 	return vm_do_claim_page (page);
-}vm_do_c;
+}
 
-/* PAGE를 클레임하고 MMU 설정을 한다. */
+/* MOD4 */
+/* page<->frame 링크, pml4_set_page로 VA<->kva 매핑, swap_in으로 내용 로드 처리 */
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
@@ -204,7 +256,14 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 
-	/* TODO: 페이지의 VA와 프레임의 PA를 매핑하는 PTE를 삽입한다. */
+	/* 페이지의 VA와 프레임의 PA를 매핑하는 PTE를 삽입한다. */
+	if(!pml4_set_page(thread_current()->pml4, page->va, frame->kva, page->writable)) {
+		frame->page = NULL;
+		page->frame = NULL;
+		palloc_free_page (frame->kva);
+		free (frame);
+		return false;
+	}
 
 	return swap_in (page, frame->kva);
 }

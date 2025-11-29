@@ -52,10 +52,11 @@ check_address(void *addr) {
         exit_with_status(-1);
     }
 
+    // 📌 수정 부분 
     // 매핑되지 않은 주소일 때 (pml4_get_page가 NULL 반환)
-    if (pml4_get_page(cur_thread->pml4, addr) == NULL) {
-        exit_with_status(-1);
-    }
+    // if (pml4_get_page(cur_thread->pml4, addr) == NULL) {
+    //     exit_with_status(-1);
+    // }
 }
 
 /* 버퍼 전체가 유효한지 검사 */

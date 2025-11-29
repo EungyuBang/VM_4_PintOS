@@ -361,9 +361,13 @@ process_exit (void) {
 	// 현재 쓰레드의 주체는 자식 쓰레드
 	struct thread *cur_thread = thread_current ();
 
+	// 📌 수정 부분
 	// 쓰레드 죽기 전에, 파일 디스크립터 정리
 	 if(cur_thread->fd_table != NULL) {
-		lock_acquire(&filesys_lock);
+		// lock_acquire(&filesys_lock);
+		bool lock_held = lock_held_by_current_thread(&filesys_lock);
+
+		if(!lock_held) lock_acquire(&filesys_lock);
 		// 반복문으로 해제하는 이유 -> 해당 쓰레드가 열었던 모든 파일을 닫아야 하기 때문에
 		for(int fd= 2; fd < FDT_LIMIT; fd++) {
 			if(cur_thread->fd_table[fd] != NULL) {
@@ -371,19 +375,21 @@ process_exit (void) {
 				cur_thread->fd_table[fd] = NULL;
 			}
 		}
-		lock_release(&filesys_lock);
+		// lock_release(&filesys_lock);
+		if(!lock_held) lock_release(&filesys_lock);
 		palloc_free_page(cur_thread->fd_table);
 		cur_thread->fd_table = NULL;
 	 }
-
+	
+	// 📌 수정 부분
 	// 10주차 rox
 	 if (cur_thread->running_file != NULL) {
-      lock_acquire(&filesys_lock);
-			// exit 전 열려있던 파일 닫아줌 (이때 deny_write 도 allow_write 로 변경됨)
+			bool lock_held = lock_held_by_current_thread(&filesys_lock);
+      if (!lock_held) lock_acquire(&filesys_lock);  
       file_close(cur_thread->running_file);
-      lock_release(&filesys_lock);
+      if (!lock_held) lock_release(&filesys_lock);  
       cur_thread->running_file = NULL;
-   } 
+    } 
 	
 	// 부모가 죽기 전 자식 탐색 -> 부모가 먼저 죽는 경우
 	// 부팅 쓰레드는 여기를 오지 않지만, 부팅 쓰레드를 제외하고, 부모 자식의 관계가 있을 수 있어서 exit시 자식 탐색 후 다 깨워줌
