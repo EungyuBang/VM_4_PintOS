@@ -88,10 +88,11 @@ kill (struct intr_frame *f) {
     	cur->exit_status = -1;
     	printf("%s: exit(%d)\n", cur->name, -1);
     	thread_exit();	
-			// printf ("%s: dying due to interrupt %#04llx (%s).\n",
-			// 		thread_name (), f->vec_no, intr_name (f->vec_no));
-			// intr_dump_frame (f);
-			// thread_exit ();
+
+			printf ("%s: dying due to interrupt %#04llx (%s).\n",
+					thread_name (), f->vec_no, intr_name (f->vec_no));
+			intr_dump_frame (f);
+			thread_exit ();
 
 		case SEL_KCSEG:
 			/* Kernel's code segment, which indicates a kernel bug.
@@ -135,8 +136,8 @@ page_fault (struct intr_frame *f) {
 	   data.  It is not necessarily the address of the instruction
 	   that caused the fault (that's f->rip). */
 	
-	// 11주차 하드웨어가 페이지 폴트 당시 실패한 va를 임시로 저장하는 레지스터 -> rcr2
-	// 그래서 fault_addr = rcr2 인거임
+	// 11주차 하드웨어가 페이지 폴트 당시 실패한 va를 임시로 저장하는 레지스터 -> cr2
+	// 그래서 fault_addr = cr2 인거임
 	fault_addr = (void *) rcr2();
 
 	/* Turn interrupts back on (they were only off so that we could

@@ -18,6 +18,7 @@ static const struct page_operations anon_ops = {
 };
 
 /* Initialize the data for anonymous pages */
+// 11주차 익명 페이지용 초기화 함수
 void
 vm_anon_init (void) {
 	/* TODO: Set up the swap_disk. */
@@ -31,6 +32,11 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 	page->operations = &anon_ops;
 
 	struct anon_page *anon_page = &page->anon;
+
+	// anon 은 바로 메모리 위에서 실행되니까 swap_slot_index = -1 로 초기화 (0도 배열시작이니까 안 됨)
+	anon_page->swap_slot_index = -1;	
+
+	return true;
 }
 
 /* Swap in the page by read contents from the swap disk. */

@@ -874,13 +874,13 @@ install_page (void *upage, void *kpage, bool writable) {
  * upper block. */
 
  // load_segment 에서 lazy_load_segment 로 넘길 구조체 
-struct lazy_load_info 
-{
-	struct file *file;
-	off_t ofs;
-	uint32_t read_bytes;
-	uint32_t zero_bytes;
-};
+// struct lazy_load_info 
+// {
+// 	struct file *file;
+// 	off_t ofs;
+// 	uint32_t read_bytes;
+// 	uint32_t zero_bytes;
+// };
 
 static bool
 lazy_load_segment (struct page *page, void *aux) {
@@ -937,49 +937,47 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes,
 		if(aux == NULL) return false;
 
 		// lazy_load_segment 로 넘길 정보 저장
-		aux->file = file;
-		aux->ofs = ofs;
-		aux->read_bytes = page_read_bytes;
-		aux->zero_bytes = page_zero_bytes;
+		aux->file = file; // 읽을 파일
+		aux->ofs = ofs; // 파일 내에서 읽기 시작할 위치
+		aux->read_bytes = page_read_bytes; // 읽을 크기
+		aux->zero_bytes = page_zero_bytes; // 0으로 채울 크기
 
-		// vm_alloc_page_with_initializer 실패시 메모리 해제 + false 반환 
+		// vm_alloc_page_with_initializer 실행 - 실패시 메모리 해제 + false 반환 
+		// VM_FILE 타입의 페이지를, upage 주소에 만들고, 나중에 lazy_load_segment 함수를 써서 채워줘, 파일 정보는 aux에 들어 있음
 		if(!vm_alloc_page_with_initializer(VM_FILE, upage, writable, lazy_load_segment, aux)) {
 			free(aux);
 			return false;
 		}
 
+		// 반복문 돌 때마다 파일 크기 업데이트
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
-		upage += PGSIZE;
-		ofs += page_read_bytes;
+		upage += PGSIZE; // 다음 메모리 칸으로 이동
+		ofs += page_read_bytes; // 다음 파일 내용으로 이동
 	}
 	return true;
 }
 
 /* Create a PAGE of stack at the USER_STACK. Return true on success. */
-// static bool
-// setup_stack (struct intr_frame *if_) {
-// 	bool success = false;
-// 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
-
-// 	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-// 	 * TODO: If success, set the rsp accordingly.
-// 	 * TODO: You should mark the page is stack. */
-// 	/* TODO: Your code goes here */
-
-// 	return success;
-// }
 static bool
 setup_stack (struct intr_frame *if_) {
 	bool success = false;
+	// 스택 시작점 -> USER_STACK -> 4KB 만큼 확장 할거니까 USER_STACK - PGSIZE  
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
+	/* TODO: Map the stack on stack_bottom and claim the page immediately.
+	 * TODO: If success, set the rsp accordingly.
+	 * TODO: You should mark the page is stack. */
+	/* TODO: Your code goes here */
 
 	/* 1. 스택 페이지 생성 (VM_MARKER_0 추가) */
+	// VM_ANON + VM_MARKER_0 인 페이지 만들기 
 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
 		
 		/* 2. 즉시 할당 (스택은 바로 씀) */
+		// STACK_BOTTOM 기준으로 페이지 즉시 할당
 		success = vm_claim_page (stack_bottom);
 
+		// 스택 공간 할당 성공시 스택 시작점은 USER_STACK -> rsp = USER_STACK
 		if (success) {
 			if_->rsp = USER_STACK;
 		}

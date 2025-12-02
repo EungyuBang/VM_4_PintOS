@@ -63,18 +63,15 @@ bool comp_va (const struct hash_elem *a_, const struct hash_elem *b_, void *aux)
  * `vm_alloc_page`. */
 // 11주차 여기서 SPT에 aux - 메타데이터 등록하는 로직 들어간다
 bool
-vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
-		vm_initializer *init, void *aux) {
-
+vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable, vm_initializer *init, void *aux) 
+{
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
 
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 
 	/* Check wheter the upage is already occupied or not. */
+	// spt_find_page == NULL -> spt에 페이지 넣을 공간 있다는 뜻
 	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: Create the page, fetch the initialier according to the VM type,
-		 * TODO: and then create "uninit" page struct by calling uninit_new. You
-		 * TODO: should modify the field after calling the uninit_new. */
 		struct page *p = (struct page*)malloc(sizeof(struct page));
 		if(p == NULL) goto err;
 
@@ -91,10 +88,12 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 				goto err;
 		}
 
+		// 페이지 타입을 VM_UNINIT 으로 설정 + init(lazy_load_segment) 함수 등록
 		uninit_new(p, upage, init, type, aux, page_initializer);
 
 		p->writable = writable;
 		/* TODO: Insert the page into the spt. */
+		// spt에 page 구조체 등록
 		if(!spt_insert_page(spt, p)) {
 			free(p);
 			goto err;
@@ -196,8 +195,8 @@ vm_handle_wp (struct page *page UNUSED) {
 /* Return true on success */
 // 여기서 유효성 검사 + SPT 탐색 + 처리 해줘야 함 (rsp 부근이면 스택 확장까지) -> 이 조건에 다 안 걸린다 -> segmentation fault
 bool
-vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
-		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
+vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED, bool user UNUSED, bool write UNUSED, bool not_present UNUSED) 
+{
 	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
 	struct page *page = NULL;
 	/* TODO: Validate the fault */
@@ -244,6 +243,7 @@ vm_claim_page (void *va UNUSED) {
 // 11주차 여기서 물리 프레임 연결하고 할당? -> 그럼 여기서 lazy_load + swap 해결?
 static bool
 vm_do_claim_page (struct page *page) {
+	// frame 할당
 	struct frame *frame = vm_get_frame ();
 
 	/* Set links */
@@ -273,9 +273,42 @@ supplemental_page_table_init (struct supplemental_page_table *spt UNUSED)
 /* Copy supplemental page table from src to dst */
 /* vm/vm.c */
 
+// 부모 -> 자식 복사시 , 페이지의 타입에 따라 나눠야함 UNINIT -> aux 복사 , ANON,LOADED -> 실제 메모리에 있는 data 복사
+// src -> 부모 (출발지) , dst = 자식 (도착지)
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst, struct supplemental_page_table *src) 
-{    }
+{
+	struct hash_iterator i; 
+	// 부모 해시 테이블의 첫 번쨰 요소부터 탐색 시작 
+	hash_first(&i, &src->pages);
+
+	while(hash_next(&i)) {
+		struct page *src_page = hash_entry(hash_cur(&i), struct page, hash_elem);		
+
+		enum vm_type type = src_page->operations->type;
+		void *upage = src_page->va;
+		bool writable = src_page->writable;
+
+		if(type = VM_UNINIT) {
+			vm_initializer *init = src_page->uninit.init; // lazy_load_segment 함수 
+			void *aux = src_page->uninit.aux; // lazy_load_info 구조체
+
+			struct lazy_load_info *new_aux = malloc(sizeof(struct lazy_load_info));
+			if(new_aux == NULL) {
+				return false;
+			} 
+			memcpy(new_aux, aux, sizeof(struct lazy_load_info));
+
+			if(!vm_alloc_page_with_initializer(VM_UNINIT, upage, writable, init, new_aux)) {
+				free(new_aux);
+				return false;
+			}
+		}
+		else {
+
+		}
+	}
+}
 
 /* Free the resource hold by the supplemental page table */
 void
