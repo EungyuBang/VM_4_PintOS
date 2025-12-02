@@ -365,7 +365,9 @@ process_exit (void) {
 
 	// 쓰레드 죽기 전에, 파일 디스크립터 정리
 	 if(cur_thread->fd_table != NULL) {
-		lock_acquire(&filesys_lock);
+		bool lock_held = lock_held_by_current_thread(&filesys_lock);
+
+		if(!lock_held) lock_acquire(&filesys_lock);
 		// 반복문으로 해제하는 이유 -> 해당 쓰레드가 열었던 모든 파일을 닫아야 하기 때문에
 		for(int fd= 2; fd < FDT_LIMIT; fd++) {
 			if(cur_thread->fd_table[fd] != NULL) {
@@ -373,18 +375,23 @@ process_exit (void) {
 				cur_thread->fd_table[fd] = NULL;
 			}
 		}
-		lock_release(&filesys_lock);
+		if(!lock_held) lock_release(&filesys_lock);
 		palloc_free_page(cur_thread->fd_table);
 		cur_thread->fd_table = NULL;
 	 }
 
 	// 10주차 rox
 	 if (cur_thread->running_file != NULL) {
-      lock_acquire(&filesys_lock);
-			// exit 전 열려있던 파일 닫아줌 (이때 deny_write 도 allow_write 로 변경됨)
-      file_close(cur_thread->running_file);
-      lock_release(&filesys_lock);
-      cur_thread->running_file = NULL;
+    //   lock_acquire(&filesys_lock);
+	// 		// exit 전 열려있던 파일 닫아줌 (이때 deny_write 도 allow_write 로 변경됨)
+    //   file_close(cur_thread->running_file);
+    //   lock_release(&filesys_lock);
+    //   cur_thread->running_file = NULL;
+	bool lock_held = lock_held_by_current_thread(&filesys_lock);
+	if (!lock_held) lock_acquire(&filesys_lock);  
+	file_close(cur_thread->running_file);
+	if (!lock_held) lock_release(&filesys_lock);  
+	cur_thread->running_file = NULL;
    } 
 	
 	// 부모가 죽기 전 자식 탐색 -> 부모가 먼저 죽는 경우
@@ -867,6 +874,48 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
+
+	struct lazy_load_arg *arg = (struct lazy_load_arg *) aux;
+	if(page == NULL || arg == NULL)
+		return false;
+
+	/* 이 페이지를 지원하는 프레임은 이미 VM 시스템에 의해 할당되어야 합니다
+	페이지가 청구되었을 때 커널 가상 주소를 가져옵니다. */
+	void *kva = page->frame->kva;
+
+	/* arg->ofs 파일에서 kva 로 read_bytes 읽기 */
+	if(arg->read_bytes > 0) {
+		off_t did_read = file_read_at(arg->file, kva, arg->read_bytes, arg->ofs);
+		if(did_read != (off_t)arg->read_bytes) {
+			goto fail_clean; // 읽기 실패 시 정리
+		}
+	}
+
+	/* Zero the remainder */
+	if(arg->zero_bytes > 0) {
+		memset((uint8_t *)kva + arg->read_bytes, 0, arg->zero_bytes);
+	}
+
+	/* 페이지가 writable이면 page 구조체에 반영(만약 필요하면) */
+	page->writable = arg->writable;
+
+	/* aux 메모리 해제 */
+	free(arg);
+
+	return true;
+
+/* 
+file_read_at 실패 시 page->frame->kva와 page 구조체 정리는
+    // 이 함수 밖(caller)에서 처리하는 것이 일반적입니다. 
+    // 여기서는 할당했던 arg만 정리합니다.
+*/
+	fail_clean:
+		if(arg != NULL) {
+			free(arg);
+		}
+	// vm_do_claim_page에서 swap_in(lazy_load_segment)의 반환값(false)을 보고 
+    // page 테이블 매핑 해제와 vm_free_frame을 호출해야 합니다.
+		return false;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -897,13 +946,37 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+				/* aux 구조체 동적 할당: 페이지별로 별도의 aux를 만듦 */
+		struct lazy_load_arg *arg = malloc(sizeof(struct lazy_load_arg));
+		if(arg == NULL)
 			return false;
 
+		/* file 재사용시 race가 우려되면 file_reopen 사용.
+		file_read_at은 offset 기반이므로 file 포인터 공유해도 동작하지만,
+		안전하게 각 페이지마다 파일을 reopen 하는 것이 흔한 방법입니다. */
+		arg->file = file_reopen(file);
+		if(arg->file == NULL) {
+			free(arg);
+			return false;
+		}
+
+		arg->ofs = ofs;
+		arg->read_bytes = page_read_bytes;
+		arg->zero_bytes = page_zero_bytes;
+		arg->writable = writable;
+
+		/* VM_? 타입(실행파일) 페이지로 등록하고 lazy loader 지정 */
+		if (!vm_alloc_page_with_initializer (VM_FILE, upage, writable,
+					lazy_load_segment, arg)) {
+			/* 실패 시 할당한 것 정리 */
+			file_close(arg->file);
+			free(arg);
+			return false;
+		}
+		
+
 		/* Advance. */
+		ofs += page_read_bytes;
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
@@ -917,11 +990,34 @@ setup_stack (struct intr_frame *if_) {
 	bool success = false;
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
+	/* Allocate an anonymous page for stack and claim it immediately.
+	   We do not want lazy loading for the first stack page. */
+	/* vm_alloc_page_with_initializer: VM_ANON type, immediate initializer can be NULL
+	   if vm_claim_page will allocate frame and zero it. */
+	if(!vm_alloc_page_with_initializer(VM_ANON, stack_bottom, true, NULL, NULL))
+		return false;
 
+	/* Claim the page now so frame is allocated and mapped */
+	if(!vm_claim_page(stack_bottom)) {
+		/* 실패 시 할당 취소(있다면) */
+		/* 참고: VM API에 따라 여기에서 페이지를 free 할 수도 있습니다 
+		setup_stack()에서 claim 실패 시 특별히 free 하지 않아도 됨(확인필요) */
+		return false;
+	}
+
+	/* Mark this page as stack page if your page struct has marker field.
+	   Different repos name it differently; if you have a vm_type marker use it. */
+	struct page *stack_page = spt_find_page (&thread_current ()->spt, stack_bottom);
+	if(stack_page != NULL) {
+		/* 예: stack_page->writable = true; 또는 stack_page->is_stack = true; */
+		stack_page->is_stack = true;
+		/* If you use vm type markers, you can also do:
+		   stack_page->operations->type = VM_MARKER_0 (or VM_MARKER_STACK) */
+	}
+
+	/* Set initial rsp to USER_STACK (top) */
+	if_->rsp = USER_STACK;
+	success = true;
 	return success;
 }
 #endif /* VM */

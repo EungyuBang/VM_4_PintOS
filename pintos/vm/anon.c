@@ -5,6 +5,9 @@
 
 /* DO NOT MODIFY BELOW LINE */
 static struct disk *swap_disk;
+static struct bitmap *swap_bitmap; // 이름 통일
+static struct lock swap_lock;       // Lock 선언
+
 static bool anon_swap_in (struct page *page, void *kva);
 static bool anon_swap_out (struct page *page);
 static void anon_destroy (struct page *page);
@@ -21,7 +24,11 @@ static const struct page_operations anon_ops = {
 void
 vm_anon_init (void) {
 	/* TODO: Set up the swap_disk. */
-	swap_disk = NULL;
+
+	//동시성 제어용 Lock 초기화
+	lock_init(&swap_lock);
+
+	// swap_disk = NULL;
 }
 
 /* Initialize the file mapping */
@@ -31,6 +38,15 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 	page->operations = &anon_ops;
 
 	struct anon_page *anon_page = &page->anon;
+
+	anon_page->swap_slot = INVALID_SLOT;
+
+	/* Optional: zero-initialize the page content if frame is already allocated */
+	if(kva != NULL) {
+		memset(kva, 0, PGSIZE);
+	}
+
+	return true;
 }
 
 /* Swap in the page by read contents from the swap disk. */
@@ -49,4 +65,8 @@ anon_swap_out (struct page *page) {
 static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
+}
+
+void anon_page_destroy(struct anon_page *anon_page) {
+    // swap 처리 부분 주석 처리 또는 빈 구현
 }

@@ -43,19 +43,30 @@ void syscall_init(void)
 
 /* 유저 메모리 검증 함수들 -> 유저 프로그램에서 잘못된 접근을 했을 때, 사용자 프로그램만 다운시키고 OS는 유지되게 해주는 함수들 */
 /* 단일 주소가 유효한 유저 주소인지 검사 */
+/* src/userprog/syscall.c - check_address */
 void
 check_address(void *addr) {
     struct thread *cur_thread = thread_current();
+    struct supplemental_page_table *spt = &cur_thread->spt; // SPT 가져오기
 
-    // 1. NULL이거나, 2. 커널 영역 주소일 때
+    // 1. NULL이거나, 유효한 사용자 주소 범위를 벗어난 경우 (필수)
     if (addr == NULL || !is_user_vaddr(addr)) {
-        exit_with_status(-1);
+        exit_with_status(-1); 
+    }
+    
+    // 2. 💡 (임시) SPT에 페이지 자체가 없는지 검사하여 강제 종료 유도 
+    //    read-bad-ptr 테스트를 통과하기 위한 방편으로, SPT에 등록된 페이지가 
+    //    아닌 경우에도 폴트를 유발하기 전에 종료시킵니다.
+    //    -> 이 검사는 vm_try_handle_fault가 처리하지 못하는 유효하지 않은 주소 접근을 
+    //       시스템 콜 진입 단계에서 차단하는 역할을 합니다.
+    if (spt_find_page(spt, addr) == NULL) {
+        // SPT에 페이지 항목 자체가 없다면 유효하지 않은 접근으로 간주하고 종료
+        // 이 경우, vm_try_handle_fault가 false를 반환하는 것과 동일한 효과를 냅니다.
+        exit_with_status(-1); 
     }
 
-    // 매핑되지 않은 주소일 때 (pml4_get_page가 NULL 반환)
-    if (pml4_get_page(cur_thread->pml4, addr) == NULL) {
-        exit_with_status(-1);
-    }
+    // 3. 강제 접근 (폴트 유발): SPT에 등록되어 있다면, 이제 폴트를 유발하여 Lazy Loading을 시도합니다.
+    (void) *(char *)addr; 
 }
 
 /* 버퍼 전체가 유효한지 검사 */
