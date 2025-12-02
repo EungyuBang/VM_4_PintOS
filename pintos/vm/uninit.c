@@ -62,6 +62,5 @@ uninit_initialize (struct page *page, void *kva) {
 static void
 uninit_destroy (struct page *page) {
 	struct uninit_page *uninit UNUSED = &page->uninit;
-	/* TODO: 필요한 동작이 있다면 구현한다.
-	 * TODO: 할 일이 없다면 그냥 반환한다. */
+	/* MOD7: UNINIT은 추가 자원이 없어 할 일 없음 */
 }

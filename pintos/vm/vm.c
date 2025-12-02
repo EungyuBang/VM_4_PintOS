@@ -1,4 +1,9 @@
-/* vm.c: 가상 메모리 객체를 위한 일반 인터페이스. */
+/* vm.c: 가상 메모리 객체를 위한 일반 인터페이스.
+ * MOD1: 보조 페이지 테이블/페이지 생성
+ * MOD2: 프레임/매핑
+ * MOD5: 폴트 처리/스택 성장
+ * MOD6: SPT 복사/정리
+ * MOD7: 스왑/추가 훅(TODO 포함) */
 
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
@@ -41,7 +46,8 @@ static bool page_less(const struct hash_elem *a, const struct hash_elem *b, void
 
 
 
-/*MOD1 키를 해싱할 함수*/
+/* MOD1: SPT 해시 함수 */
+/*sturct pagd의 va를 키로 해시값을 계산*/
 
 static unsigned
 page_hash(const struct hash_elem *e, void *aux UNUSED) {
@@ -49,7 +55,8 @@ page_hash(const struct hash_elem *e, void *aux UNUSED) {
     return hash_bytes(&p->va, sizeof p->va);
 }
 
-/*MOD1 정렬 함수*/
+/* MOD1: SPT 정렬 함수 */
+/*두 struct page의 va를 비교해 정렬 기준을 정함*/
 static bool
 page_less(const struct hash_elem *a,
           const struct hash_elem *b,
@@ -59,9 +66,10 @@ page_less(const struct hash_elem *a,
     return pa->va < pb->va;
 }
 
-/*MOD2*/
+/* MOD1: 지연 페이지 예약 */
 /* 초기화 정보가 있는 지연 페이지 객체를 생성한다.
  * 새 페이지를 만들고 싶다면 직접 만들지 말고 이 함수나 `vm_alloc_page`를 거친다. */
+/*type: ANOD/FILE.. upage: VA init: lazy 콜백 aux: 콜백용 데이터*/
 bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
@@ -74,7 +82,7 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 	if(spt_find_page(spt, upage)) {
 		return false;
 	}
-
+	//struct page 메타데이터를 malloc 
 	struct page *page = malloc(sizeof(struct page));
 	if(page == NULL) {
 		return false;
@@ -100,7 +108,7 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 	* "미초기화" 페이지를 구성한다. 호출 이후 필요한 필드를 채운다. */
 	uninit_new(page, upage, init, type, aux, page_init);
 	page->writable = writable;
-	/* spt에 페이지를 삽입한다. */
+	/* spt에 페이지를 해시에 삽입한다. */
 	if(!spt_insert_page(spt, page)) {
 		vm_dealloc_page(page);
 		return false;
@@ -124,7 +132,7 @@ spt_find_page (struct supplemental_page_table *spt, void *va) {
 	return elem != NULL ? hash_entry (elem, struct page, spt_elem) : NULL;
 }
 
-/*MOD1*/
+/* MOD1: SPT 삽입/삭제 */
 /* 검증 후 페이지를 SPT에 삽입한다. */
 bool
 spt_insert_page (struct supplemental_page_table *spt UNUSED,
@@ -171,7 +179,7 @@ vm_evict_frame (void) {
 	return NULL;
 }
 
-/* MOD3 */
+/* MOD2: 프레임 할당 */
 /* palloc()으로 프레임을 얻는다. 만약 가용 페이지가 없다면 하나를 축출해 반환한다.
  * kva와 frame을 일단 연결만 해 둔다. */
 static struct frame *
@@ -205,9 +213,13 @@ vm_get_frame (void) {
 	return frame;
 }
 
-/* 스택을 성장시킨다. */
+/* MOD5: 스택을 성장시킨다. */
 static void
-vm_stack_growth (void *addr UNUSED) {
+vm_stack_growth (void *addr) {
+	void *stack_bottom = pg_round_down (addr);
+	/* 스택 페이지를 바로 할당하고 클레임 */
+	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true))
+		vm_claim_page (stack_bottom);
 }
 
 /* 쓰기 보호된 페이지에서의 폴트를 처리한다. */
@@ -215,14 +227,33 @@ static bool
 vm_handle_wp (struct page *page UNUSED) {
 }
 
-/* 성공 시 true를 반환한다. */
+/* MOD5: 폴트 처리 */
 bool
 vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
-	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
+	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page = NULL;
-	/* TODO: 폴트가 유효한지 검사한다. */
-	/* TODO: 필요한 코드를 작성한다. */
+
+	/* 잘못된 접근이면 실패 */
+	if (addr == NULL || is_kernel_vaddr (addr))
+		return false;
+
+	/* not-present가 아니고 쓰기 보호라면 처리 */
+	if (!not_present)
+		return vm_handle_wp (page);
+
+	/* 페이지 조회 */
+	page = spt_find_page (spt, addr);
+	if (page == NULL) {
+		/* 스택 자동 성장 조건: 사용자 스택 포인터 근처인지 확인 */
+		void *rsp = (void *) (user ? f->rsp : thread_current ()->tf.rsp);
+		if (addr >= rsp - 8 && addr < (void *) USER_STACK) {
+			vm_stack_growth (addr);
+			page = spt_find_page (spt, addr);
+		}
+		if (page == NULL)
+			return false;
+	}
 
 	return vm_do_claim_page (page);
 }
@@ -235,7 +266,7 @@ vm_dealloc_page (struct page *page) {
 	free (page);
 }
 
-/* MOD5*/
+/* MOD2: VA로 페이지 클레임 */
 /* 주어진 VA에 대해 SPT에서 page를 찾아서 있으면 vm_do_claim_page로 넘김 */
 bool
 vm_claim_page (void *va) {
@@ -246,8 +277,8 @@ vm_claim_page (void *va) {
 	return vm_do_claim_page (page);
 }
 
-/* MOD4 */
-/* page<->frame 링크, pml4_set_page로 VA<->kva 매핑, swap_in으로 내용 로드 처리 */
+/* MOD2: 페이지 클레임 후 매핑/로드 */
+/* 프레임 확보, 프레임<->페이지 링크, VA와 kva를 PML4에 매핑, swap_in호출해서 UNINIT이면 타입전환+lazyload, ANON이나 FILE이면 각자 */
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
@@ -268,7 +299,7 @@ vm_do_claim_page (struct page *page) {
 	return swap_in (page, frame->kva);
 }
 
-/* MOD1 */
+/* MOD1: SPT 초기화 */
 /* 새로운 보조 페이지 테이블을 초기화한다. */
 void
 supplemental_page_table_init (struct supplemental_page_table *spt) {
@@ -280,11 +311,20 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
 		struct supplemental_page_table *src UNUSED) {
+	return false;
 }
 
-/* 보조 페이지 테이블이 들고 있는 자원을 해제한다. */
+/* MOD6: SPT 자원 해제 */
 void
 supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
-	/* TODO: 스레드가 보유한 모든 supplemental_page_table을 파괴하고
-	 * TODO: 수정된 내용을 스토리지로 기록한다. */
+	if (spt == NULL)
+		return;
+
+	struct hash_iterator it;
+	hash_first (&it, &spt->pages);
+	while (hash_next (&it)) {
+		struct page *page = hash_entry (hash_cur (&it), struct page, spt_elem);
+		hash_delete (&spt->pages, &page->spt_elem);
+		vm_dealloc_page (page);
+	}
 }
