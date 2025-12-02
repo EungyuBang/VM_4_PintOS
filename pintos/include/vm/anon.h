@@ -5,7 +5,7 @@ struct page;
 enum vm_type;
 
 struct anon_page {
-	/* TODO(vm): 스왑 저장소 메타데이터 등을 채운다. */
+	size_t slot; /* 스왑 슬롯 인덱스, 비어 있으면 BITMAP_ERROR */
 };
 
 void vm_anon_init (void);

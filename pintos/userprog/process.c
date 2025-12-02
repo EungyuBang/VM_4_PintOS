@@ -863,14 +863,45 @@ install_page (void *upage, void *kpage, bool writable) {
 }
 #else
 /* From here, codes will be used after project 3.
- * If you want to implement the function for only project 2, implement it on the
- * upper block. */
+ * MOD4: ELF 로딩 지연(lazy_load_segment/load_segment/setup_stack)
+ * MOD5: 폴트 처리/스택 성장 훅(vm_try_handle_fault에서 호출) */
+
+/* MOD4: lazy load 시 파일 정보를 전달하기 위한 구조체 */
+struct file_load_aux {
+	struct file *file;
+	off_t offset;
+	size_t read_bytes;
+	size_t zero_bytes;
+	bool writable;
+};
 
 static bool
 lazy_load_segment (struct page *page, void *aux) {
-	/* TODO: Load the segment from the file */
-	/* TODO: This called when the first page fault occurs on address VA. */
-	/* TODO: VA is available when calling this function. */
+	/* MOD4: aux에 담긴 파일/오프셋 정보를 이용해 실제 내용을 채운다. */
+	struct file_load_aux *info = aux;
+	struct file *file = info->file;
+	off_t offset = info->offset;
+	size_t read_bytes = info->read_bytes;
+	size_t zero_bytes = info->zero_bytes;
+
+	/* 파일 페이지 메타 채우기 */
+	page->file.file = file;
+	page->file.offset = offset;
+	page->file.read_bytes = read_bytes;
+	page->file.zero_bytes = zero_bytes;
+	page->file.writable = info->writable;
+	page->writable = info->writable;
+
+	/* 파일에서 읽어오기 */
+	file_seek (file, offset);
+	if (file_read (file, page->frame->kva, read_bytes) != (int) read_bytes)
+		return false;
+
+	/* 나머지는 0으로 채움 */
+	memset ((uint8_t *) page->frame->kva + read_bytes, 0, zero_bytes);
+
+	free (info);
+	return true;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -901,16 +932,27 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-		/* TODO: Set up aux to pass information to the lazy_load_segment. */
-		void *aux = NULL;
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
-					writable, lazy_load_segment, aux))
+		/* MOD4: lazy_load_segment에 넘길 파일 정보 구성 */
+		struct file_load_aux *aux = malloc (sizeof *aux);
+		if (aux == NULL)
 			return false;
+		aux->file = file;
+		aux->offset = ofs;
+		aux->read_bytes = page_read_bytes;
+		aux->zero_bytes = page_zero_bytes;
+		aux->writable = writable;
+
+		if (!vm_alloc_page_with_initializer (VM_FILE, upage,
+					writable, lazy_load_segment, aux)) {
+			free (aux);
+			return false;
+		}
 
 		/* Advance. */
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
+		ofs += page_read_bytes;
 	}
 	return true;
 }
@@ -919,12 +961,17 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (struct intr_frame *if_) {
 	bool success = false;
-	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
-	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-	 * TODO: If success, set the rsp accordingly.
-	 * TODO: You should mark the page is stack. */
-	/* TODO: Your code goes here */
+	//한 페이지 공간을 예약할 VA를 정함
+	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
+    
+	/* MOD4: 스택 페이지를 즉시 할당하고 클레임 */
+    //UNINIT 페이지 객체를 만들고 SPT에 등록만 함(프레임 없음)
+	success = vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true);
+	if (success)
+		success = vm_claim_page (stack_bottom);
+	if (success)
+		if_->rsp = USER_STACK;
 
 	return success;
 }
