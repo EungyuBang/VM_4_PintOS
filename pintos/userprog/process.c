@@ -974,7 +974,7 @@ setup_stack (struct intr_frame *if_) {
 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
 		
 		/* 2. 즉시 할당 (스택은 바로 씀) */
-		// STACK_BOTTOM 기준으로 페이지 즉시 할당
+		// STACK_BOTTOM 기준으로 페이지 즉시 할당	
 		success = vm_claim_page (stack_bottom);
 
 		// 스택 공간 할당 성공시 스택 시작점은 USER_STACK -> rsp = USER_STACK

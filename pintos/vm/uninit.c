@@ -33,10 +33,10 @@ uninit_new (struct page *page, void *va, vm_initializer *init, enum vm_type type
 		.va = va,
 		.frame = NULL, /* no frame for now */
 		.uninit = (struct uninit_page) {
-			.init = init, // lazy_load_segment
-			.type = type, // VM_FILE
-			.aux = aux, // lazy_load_info
-			.page_initializer = initializer,
+			.init = init, // type : file -> lazy_load_segment or type : anon -> NULL
+			.type = type, // type : VM_FILE or tpye : VM_ANON
+			.aux = aux, // type : file -> lazy_load_info , type : anon -> NULL
+			.page_initializer = initializer, // type : file -> file_backed_initializer or type : anon -> anon_initializer
 		}
 	};
 }
@@ -48,11 +48,13 @@ uninit_initialize (struct page *page, void *kva) {
 	struct uninit_page *uninit = &page->uninit;
 
 	/* Fetch first, page_initialize may overwrite the values */
-	vm_initializer *init = uninit->init; // 여기서 init -> load_segment에서 넣어두었던 lazy_load_segment 함수임
-	void *aux = uninit->aux; // aux -> 해당 파일 정보를 담아두었던 lazy_load_info 구조체
+	vm_initializer *init = uninit->init; // type : file -> init -> lazy_load_segment 함수 or type : anon -> init -> NULL
+	void *aux = uninit->aux; // type : file -> aux -> lazy_load_info 구조체 or type : anon -> aux -> NULL
 
 	/* TODO: You may need to fix this function. */
 	// uninit -> page_initializer (anon_initializer or file_backed_initializer 가 담겨 있음)
+	// type : file -> file_backed_initializer (page, VM_FILE, kva) && (lazy_laod_segment) ? lazy_load_segment(page, aux) : true
+	// type : anon -> anon_initializer (page, VM_ANON, kva) && (NULL ? NULl : true)
 	return uninit->page_initializer (page, uninit->type, kva) && (init ? init (page, aux) : true);
 }
 

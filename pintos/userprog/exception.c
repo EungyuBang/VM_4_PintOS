@@ -89,10 +89,10 @@ kill (struct intr_frame *f) {
     	printf("%s: exit(%d)\n", cur->name, -1);
     	thread_exit();	
 
-			printf ("%s: dying due to interrupt %#04llx (%s).\n",
-					thread_name (), f->vec_no, intr_name (f->vec_no));
-			intr_dump_frame (f);
-			thread_exit ();
+			// printf ("%s: dying due to interrupt %#04llx (%s).\n",
+			// 		thread_name (), f->vec_no, intr_name (f->vec_no));
+			// intr_dump_frame (f);
+			// thread_exit ();
 
 		case SEL_KCSEG:
 			/* Kernel's code segment, which indicates a kernel bug.
