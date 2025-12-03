@@ -126,6 +126,8 @@ struct thread {
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	// 커널 모드일때를 위한 rsp 저장
+	uintptr_t rsp;
 #endif
 
 	/* Owned by thread.c. */

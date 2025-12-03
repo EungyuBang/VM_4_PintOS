@@ -14,7 +14,7 @@
 #include "devices/input.h"
 #include "filesys/filesys.h"
 #include "lib/string.h"
-
+#include "vm/vm.h"
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
@@ -114,6 +114,10 @@ exit_with_status(int status) {
 void
 syscall_handler (struct intr_frame *f)
 {
+  // 커널 모드로 전환 전 인터럽트 프레임에 저장된 rsp 값 유저모드 thread에 저장 
+  struct thread *cur_thread = thread_current();
+  cur_thread->rsp = f->rsp; 
+
   /* 시스템 콜 번호는 rax 레지스터에 저장됨 */
   int syscall_num = f->R.rax;
   switch (syscall_num)
@@ -331,6 +335,7 @@ void sys_read(struct intr_frame *f)
   // }
 
   check_buffer(buffer, size);
+
   // fd=0 -> 표준입력 : 키보드 입력
   if(fd == 0)
   {
