@@ -211,8 +211,11 @@ __do_fork (void *aux) {
 	process_activate (child);
 #ifdef VM
 	supplemental_page_table_init (&child->spt);
-	if (!supplemental_page_table_copy (&child->spt, &parent->spt))
+	if (!supplemental_page_table_copy (&child->spt, &parent->spt)) {
+		printf ("[fork] spt copy failed (parent=%s tid=%d)\n",
+				parent->name, parent->tid);
 		goto error;
+	}
 #else
 // 부모의 pml4 를 처음부터 끝까지 훑으면서, 유효한 페이지가 나올 때마다 duplicate_pte 함수 실행
 	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))

@@ -9,6 +9,8 @@
 #include "threads/vaddr.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include <stdio.h>
+#include <string.h>
 
 /* 각 서브시스템의 초기화 코드를 호출해 가상 메모리 서브시스템을 초기화한다. */
 void
@@ -43,6 +45,16 @@ static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
 static unsigned page_hash(const struct hash_elem *e, void *aux UNUSED);
 static bool page_less(const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED);
+static void spt_destructor (struct hash_elem *e, void *aux UNUSED);
+
+/* lazy load 시 사용한 파일 정보 구조체(process.c와 동일) */
+struct file_load_aux {
+	struct file *file;
+	off_t offset;
+	size_t read_bytes;
+	size_t zero_bytes;
+	bool writable;
+};
 
 
 
@@ -309,22 +321,127 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 
 /* src의 보조 페이지 테이블을 dst로 복사한다. */
 bool
-supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
-		struct supplemental_page_table *src UNUSED) {
+supplemental_page_table_copy (struct supplemental_page_table *dst,
+		struct supplemental_page_table *src) {
+	struct hash_iterator it;
+	const char *fail_stage = NULL;
+	void *fail_va = NULL;
+	enum vm_type fail_type = 0;
+
+	//이터레이터로 초기화한 뒤 
+	hash_first (&it, &src->pages);
+	//다음 요소가 있을 때까지 반복 (해시의 버킷을 순회)
+	while (hash_next (&it)) {
+		//hash next로 현재 요소를 얻고 page로 반환
+		struct page *src_page = hash_entry (hash_cur (&it), struct page, spt_elem);
+
+		//페이지가 UNINIT인지 확인, lazy페이지이면 프레임이 없으므로 처리 방식이 달라짐
+		bool is_uninit = src_page->operations->type == VM_UNINIT;
+
+		//VM_UNINIT이면 실제 타입을 얻음 아니면 그대로 타입을 반환
+		enum vm_type type = is_uninit ? VM_TYPE (src_page->uninit.type)
+									  : page_get_type (src_page);
+		void *va = src_page->va;
+		bool writable = src_page->writable;
+		
+		//디버깅 위한 값
+		fail_va = va;
+		fail_type = type;
+
+		//UNINIT이라(lazy 상태)면 초기화 정보도 복사
+		if (is_uninit) {
+			struct uninit_page *uninit = &src_page->uninit;
+			void *aux = uninit->aux;
+			bool aux_copied = false;
+
+			/* 파일 포인터-오프셋이 들어 있는 구조체라 부모와 공유하면 안됨 */
+			/* 부모가 파일 기반(VM_FILE)이고 로딩 정보(aux)가 있을 때*/
+			if (VM_TYPE (uninit->type) == VM_FILE && uninit->aux != NULL) {
+				//부모의 파일 정보
+				struct file_load_aux *src_aux = uninit->aux;
+				
+				//자식을 위한 파일 로딩 정보를 위한 메모리 할당
+				struct file_load_aux *dst_aux = malloc (sizeof *dst_aux);
+				if (dst_aux == NULL) {
+					fail_stage = "aux alloc";
+					goto fail;
+				}
+				
+				//부모의 파일 로딩 정보를 자식으로 복사
+				memcpy (dst_aux, src_aux, sizeof *dst_aux);
+				
+				//앞으로 사용할 aux포인터를 자식의 것으로 변경
+				aux = dst_aux;
+				aux_copied = true;
+			}
+
+			/* 자식에게도 부모와 똑같은 UNINIT 페이지 생성*/
+			if (!vm_alloc_page_with_initializer (uninit->type, va, writable,
+						uninit->init, aux)) {
+				if (aux_copied)
+					free (aux);
+				fail_stage = "uninit alloc";
+				goto fail;
+			}
+			/* 메모리할당 + 매핑 + swapin */
+			if (!vm_claim_page (va)) {
+				fail_stage = "uninit claim";
+				goto fail;
+			}
+		} else {
+			//자식 SPT에 페이지 할당
+			if (!vm_alloc_page (type, va, writable)) {
+				fail_stage = "alloc";
+				goto fail;
+			}
+
+			//페이지에 프레임 할당, 물리 메모리와 매핑 설정
+			if (!vm_claim_page (va)) {
+				fail_stage = "claim";
+				goto fail;
+			}
+
+			//자식 SPT에서 방금 만든 페이지 찾아옴 부모 페이지도 실제 프레임 가졌는지 확인
+			struct page *dst_page = spt_find_page (dst, va);
+			if (dst_page == NULL || src_page->frame == NULL) {
+				fail_stage = "find dst/frame";
+				goto fail;
+			}
+
+			//부모 페이지의 내용(kva 물리프레임)을 자식 페이지로 복사
+			memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+		}
+	}
+
+	return true;
+
+fail:
+	printf ("[spt_copy] fail va=%p type=%d stage=%s\n",
+			fail_va, fail_type, fail_stage ? fail_stage : "unknown");
+	supplemental_page_table_kill (dst);
 	return false;
 }
 
 /* MOD6: SPT 자원 해제 */
 void
-supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
+supplemental_page_table_kill (struct supplemental_page_table *spt) {
 	if (spt == NULL)
 		return;
 
-	struct hash_iterator it;
-	hash_first (&it, &spt->pages);
-	while (hash_next (&it)) {
-		struct page *page = hash_entry (hash_cur (&it), struct page, spt_elem);
-		hash_delete (&spt->pages, &page->spt_elem);
-		vm_dealloc_page (page);
-	}
+	hash_clear (&spt->pages, spt_destructor);
 }
+
+static void
+spt_destructor (struct hash_elem *e, void *aux UNUSED) {
+	struct page *page = hash_entry (e, struct page, spt_elem);
+
+	/* UNINIT의 lazy aux가 남아 있다면 해제 */
+	if (page->operations->type == VM_UNINIT) {
+		struct uninit_page *uninit = &page->uninit;
+		if (VM_TYPE (uninit->type) == VM_FILE && uninit->aux != NULL)
+			free (uninit->aux);
+	}
+
+	vm_dealloc_page (page);
+}
+	
