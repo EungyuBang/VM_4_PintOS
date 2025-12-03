@@ -947,7 +947,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 				/* aux 구조체 동적 할당: 페이지별로 별도의 aux를 만듦 */
-		struct lazy_load_arg *arg = malloc(sizeof(struct lazy_load_arg));
+		struct lazy_load_arg *arg = calloc(sizeof(struct lazy_load_arg));
 		if(arg == NULL)
 			return false;
 
@@ -973,7 +973,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 			free(arg);
 			return false;
 		}
-		
+
 
 		/* Advance. */
 		ofs += page_read_bytes;
