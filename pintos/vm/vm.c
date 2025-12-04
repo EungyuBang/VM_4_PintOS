@@ -355,85 +355,110 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
         struct page *src_page = hash_entry(hash_cur(&i), struct page, hash_elem);
         enum vm_type type = page_get_type(src_page);
 
-        void *upage = src_page->va;
+        void *upage = src_page->va; // <-- Pintos에서 사용하는 가상 주소 변수는 upage/va
         bool writable = src_page->writable;
 
-        /* ---------- [1] VM_FILE (Loaded) 처리 ---------- */
-        if (type == VM_FILE) {
-             // 로드된 VM_FILE 페이지는 COW 로직이 필요. 현재는 실패 처리 유지.
+        // 💡 VM_FILE (LOADED) 타입은 COW 미구현 시 실패 처리 (이전 로직 유지)
+        if (type == VM_FILE && src_page->frame != NULL) {
              goto fail; 
         }
 
-        /* ---------- [2] ANONYMOUS PAGE (Deep Copy Contents) ---------- */
-        // VM_ANON 페이지는 이미 로드된 상태일 수 있습니다.
-        // 여기서는 VM_ANON 페이지를 VM_UNINIT 상태로 복사하여 Lazy Load를 유도합니다.
-        else if (type == VM_ANON || type == VM_UNINIT) {
+        /* ---------- [1] UNINITIALIZED PAGE (Lazy Loading Info Copy) ---------- */
+        if (type == VM_UNINIT) {
             
-            // 1. aux_copy 변수 선언 및 메모리 할당
-            struct lazy_load_arg *aux_copy = NULL;
-
-            // VM_ANON의 경우, aux는 NULL이지만, VM_UNINIT의 경우에는 aux를 복사해야 함.
-            if (type == VM_UNINIT) {
-                aux_copy = (struct lazy_load_arg *)calloc(1, sizeof(struct lazy_load_arg));
-                if (aux_copy == NULL) goto fail;
-                memcpy(aux_copy, src_page->uninit.aux, sizeof(struct lazy_load_arg));
-            }
-            // VM_ANON은 초기화 함수가 NULL, aux도 NULL
+            // Pintos의 vm/vm.h에 struct lazy_load_arg와 유사한 구조체가 있어야 함
+            // 여기서는 원본 코드의 struct lazy_load_arg 대신 src_page->uninit.aux를 사용합니다.
+            struct lazy_load_arg *src_aux = src_page->uninit.aux;
+            struct lazy_load_arg *dst_aux = NULL;
+            vm_initializer *init = src_page->uninit.init;
             
-            // 2. VM_FILE 타입일 때 file_reopen
-            if (type == VM_UNINIT && src_page->uninit.type == VM_FILE) {
-                // ... (file_reopen 로직 유지) ...
-                struct lazy_load_arg *src_arg = (struct lazy_load_arg *)src_page->uninit.aux;
-                struct lazy_load_arg *dst_arg = (struct lazy_load_arg *)aux_copy;
-
-                dst_arg->file = file_reopen(src_arg->file);
-                if (dst_arg->file == NULL) {
-                    free(aux_copy);
+            // VM_FILE 타입인 경우에만 aux 구조체를 깊은 복사하고 file_reopen
+            if (VM_TYPE(src_page->uninit.type) == VM_FILE && src_aux != NULL) {
+                
+                // 1. 자식을 위한 aux 구조체 메모리 할당
+                dst_aux = (struct lazy_load_arg *)calloc(1, sizeof(struct lazy_load_arg));
+                if (dst_aux == NULL) {
+                    goto fail;
+                }
+                
+                // 2. 부모의 파일 로딩 정보를 자식으로 복사
+                memcpy (dst_aux, src_aux, sizeof(struct lazy_load_arg));
+                
+                // 3. 파일 포인터를 file_reopen으로 갱신 (★ 독립성 확보)
+                dst_aux->file = file_reopen(src_aux->file);
+                if (dst_aux->file == NULL) {
+                    free (dst_aux);
                     goto fail;
                 }
             }
+            // VM_ANON의 VM_UNINIT 상태는 aux가 NULL이어야 하므로 dst_aux는 NULL 유지.
 
-            // 3. 자식 SPT에 Lazy Loading 페이지 항목을 추가
-            if(!vm_alloc_page_with_initializer(
-                (type == VM_ANON) ? VM_ANON : src_page->uninit.type,
-                upage,
-                writable,
-                (type == VM_ANON) ? NULL : src_page->uninit.init, // VM_ANON은 init이 NULL
-                aux_copy)) // VM_ANON은 NULL, VM_UNINIT은 복사된 aux
+            /* 4. 자식 SPT에 부모와 똑같은 UNINIT 페이지 생성 (Lazy Copy) */
+            if (!vm_alloc_page_with_initializer (
+                    src_page->uninit.type, 
+                    upage, 
+                    writable,
+                    init, 
+                    (dst_aux == NULL) ? src_aux : dst_aux)) // aux 포인터 설정
             {
-                // 실패 시 정리
-                if (type == VM_UNINIT && src_page->uninit.type == VM_FILE) {
-                    file_close(((struct lazy_load_arg *)aux_copy)->file);
+                // 실패 시 정리: VM_FILE 타입이었으면 file_close 및 aux 해제
+                if (dst_aux != NULL) {
+                    file_close(dst_aux->file);
+                    free (dst_aux);
                 }
-                free(aux_copy);
+                goto fail;
+            }
+            
+            // 💡 VM_UNINIT은 Lazy Loading이므로, 이 단계에서 vm_claim_page를 호출하면 안 됩니다.
+            //    vm_claim_page 호출은 자식이 페이지 폴트를 일으켰을 때 수행됩니다.
+
+            continue;
+        } 
+        
+        /* ---------- [2] 기타 로드된 페이지 (VM_ANON 등) 처리 (Deep Copy) ---------- */
+        else {
+            // 이 블록은 VM_ANON 페이지를 처리하기 위한 로직이어야 합니다.
+
+            // 1. 자식 SPT에 VM_ANON 페이지 항목을 생성 (Lazy)
+            if (!vm_alloc_page_with_initializer (
+                        type, 
+                        upage, 
+                        writable,
+                        NULL, // VM_ANON은 init이 NULL
+                        NULL)) {
                 goto fail;
             }
 
-            // 4. 부모가 로드된 상태(VM_ANON)였다면, 내용을 Swap Slot에 저장
-            // 이 로직은 swap-out이 구현되어야 가능합니다. 현재는 생략하거나,
-            // COW 미구현 시 VM_ANON 페이지의 내용 복사가 필요할 수 있습니다.
+            // 2. 페이지에 프레임 할당 및 매핑 (Claim) - 부모 문맥에서 수행 시 오류 가능성 있음.
+            //    단, 현재 Pintos VM 구현에서는 claim을 호출하여 내용을 복사하도록 요구하는 경우가 많습니다.
+            if (!vm_claim_page (upage)) {
+                 // 💡 이 부분이 실패하면, vm_claim_page가 thread_current()->spt를 사용하기 때문일 수 있습니다.
+                goto fail;
+            }
 
-            // **BUT: 가장 간단한 해결책** (Lazy Copy):
-            // 부모가 Resident라도 내용을 복사하지 않고, 자식이 폴트 시 새로운 클린 페이지를 받도록 합니다.
-            // **실제 `fork`에서는 VM_ANON은 깊은 복사가 필요합니다. 하지만 현재 구조가 안 맞는다면,
-            // VM_ANON 페이지의 내용을 스왑 공간에 저장한 후, 자식이 폴트 시 로드해야 합니다.**
+            // 3. 자식 SPT에서 방금 만든 페이지 찾아옴 (dst SPT에서 찾음)
+            struct page *dst_page = spt_find_page (dst, upage);
+            
+            // 4. 부모 페이지가 실제 프레임을 가졌는지 확인
+            if (dst_page == NULL || src_page->frame == NULL) {
+                 // dst_page가 NULL인 경우는 vm_claim_page 실패가 선행되었을 가능성이 높습니다.
+                 // src_page->frame이 NULL이면 Swapped Out 상태이므로 복사 생략 (자식이 폴트 시 로드함).
+                 // 로드된 상태가 아니므로 continue
+                 if (src_page->frame == NULL) continue;
+                 goto fail;
+            }
 
-            // **통과를 위한 임시 방편:**
-            // (VM_ANON을 VM_UNINIT으로 만들었으니, 자식이 폴트 시 새 페이지를 받을 것입니다.)
-
+            // 5. 부모 페이지의 내용(kva 물리프레임)을 자식 페이지로 복사 (Deep Copy)
+            memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
             continue;
         }
-
-        /* ---------- [3] 기타 타입 처리 ---------- */
-        else {
-            goto fail;
-        }
     }
+
     return true;
 
-    fail:
-        supplemental_page_table_kill(dst);
-        return false;
+fail:
+    supplemental_page_table_kill (dst);
+    return false;
 }
 
 /* Free the resource hold by the supplemental page table */

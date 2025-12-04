@@ -95,7 +95,7 @@ tid_t
 process_fork (const char *name, struct intr_frame *if_) {
 	struct thread *parent_thread = thread_current();
 
-
+	printf("4");
 	struct fork_struct *fork_struct = malloc(sizeof(struct fork_struct));
 	if(fork_struct == NULL) {
 		return TID_ERROR;
@@ -343,13 +343,13 @@ process_wait (tid_t child_tid UNUSED) {
 	}
 
 	// 두번 wait 방지
-	lock_acquire(&filesys_lock);
+	// lock_acquire(&filesys_lock);
 	if(search_child->waited){
 		lock_release(&filesys_lock);
 		return -1;
 	}
 	search_child->waited = true;
-	lock_release(&filesys_lock);
+	// lock_release(&filesys_lock);
 	
 	// 부모는 자식의 개인 세마포어를 기다리면서 sleep
 	sema_down(&search_child->wait_sema);

@@ -136,6 +136,7 @@ syscall_handler (struct intr_frame *f)
       sys_exit(f);
       break;
     case SYS_FORK:    /* Clone current process. */
+      printf("1");
       sys_fork(f);
       break;
     case SYS_EXEC:    /* Switch current process. */
@@ -202,8 +203,9 @@ void sys_exit(struct intr_frame *f)
 void sys_fork(struct intr_frame *f) 
 {
   const char *name = (const char *)f->R.rdi;
+
   check_address(name);
-  
+ 
   f->R.rax = process_fork(name, f);
 }
 
