@@ -136,7 +136,6 @@ syscall_handler (struct intr_frame *f)
       sys_exit(f);
       break;
     case SYS_FORK:    /* Clone current process. */
-      printf("1");
       sys_fork(f);
       break;
     case SYS_EXEC:    /* Switch current process. */

@@ -95,7 +95,6 @@ tid_t
 process_fork (const char *name, struct intr_frame *if_) {
 	struct thread *parent_thread = thread_current();
 
-	printf("4");
 	struct fork_struct *fork_struct = malloc(sizeof(struct fork_struct));
 	if(fork_struct == NULL) {
 		return TID_ERROR;

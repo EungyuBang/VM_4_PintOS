@@ -359,9 +359,9 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
         bool writable = src_page->writable;
 
         // 💡 VM_FILE (LOADED) 타입은 COW 미구현 시 실패 처리 (이전 로직 유지)
-        if (type == VM_FILE && src_page->frame != NULL) {
-             goto fail; 
-        }
+        // if (type == VM_FILE && src_page->frame != NULL) {
+        //      goto fail; 
+        // }
 
         /* ---------- [1] UNINITIALIZED PAGE (Lazy Loading Info Copy) ---------- */
         if (type == VM_UNINIT) {
