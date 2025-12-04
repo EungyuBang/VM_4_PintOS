@@ -61,10 +61,7 @@ uninit_initialize (struct page *page, void *kva) {
  * PAGE 메모리 자체는 호출자가 해제한다. */
 static void
 uninit_destroy (struct page *page) {
-	struct uninit_page *uninit = &page->uninit;
-	
-	if(VM_TYPE(uninit->type) == VM_FILE && uninit->aux != NULL){
-		free (uninit->aux);
-		uninit->aux = NULL;
-	}
+	struct uninit_page *uninit UNUSED = &page->uninit;
+	/* 현재 단계에서는 lazy file aux를 따로 해제하지 않는다.
+	   첫 접근 시 lazy_load_segment가 이미 정리하므로 중복 해제를 막는다. */
 }

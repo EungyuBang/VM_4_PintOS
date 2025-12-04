@@ -229,6 +229,11 @@ vm_get_frame (void) {
 static void
 vm_stack_growth (void *addr) {
 	void *stack_bottom = pg_round_down (addr);
+
+	if(((uint8_t *)USER_STACK - (uint8_t *)stack_bottom) > 1 * 1024 * 1024) {
+		return;
+	}
+
 	/* 스택 페이지를 바로 할당하고 클레임 */
 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true))
 		vm_claim_page (stack_bottom);
@@ -259,7 +264,7 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 	if (page == NULL) {
 		/* 스택 자동 성장 조건: 사용자 스택 포인터 근처인지 확인 */
 		void *rsp = (void *) (user ? f->rsp : thread_current ()->tf.rsp);
-
+		if(rsp == NULL) return false;
 		//폴트가 난 주소는 rsp-8일 경우 USER_STACK~ rsp 사이가 스택으로 할당된 공간
 		if (addr >= rsp - 8 && addr < (void *) USER_STACK) {
 			vm_stack_growth (addr);
