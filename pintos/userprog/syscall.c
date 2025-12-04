@@ -14,6 +14,7 @@
 #include "devices/input.h"
 #include "filesys/filesys.h"
 #include "lib/string.h"
+#include "vm/vm.h"
 
 
 void syscall_entry(void);

@@ -24,15 +24,12 @@
 #ifdef VM
 #include "vm/vm.h"
 #endif
-
-
 struct fork_struct {
 	struct thread *parent;
 	struct intr_frame parent_if;
 	bool fork_success;
 	struct semaphore fork_sema;
 };
-
 // static struct semaphore temporary;
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
@@ -233,6 +230,7 @@ __do_fork (void *aux) {
 	if (parent->running_file != NULL) {
 		// 자식의 실행중인 파일에도 복사
     child->running_file = file_duplicate(parent->running_file);
+	if (child->running_file == NULL) goto error;
 		// 자식의 실행중인 파일도 deny_write 상태 유지 !
     file_deny_write(child->running_file);
 	}
@@ -247,6 +245,13 @@ __do_fork (void *aux) {
 	if (succ)
 		do_iret (&if_);
 error:
+	if (child->running_file != NULL) {
+        lock_acquire(&filesys_lock);
+        file_close(child->running_file);
+        lock_release(&filesys_lock);
+        // file_deny_write_remove(child->running_file); // VM 파트에서는 file_close가 deny를 해제함
+    }
+
 	parent_data->fork_success = false;
 	sema_up(&parent_data->fork_sema);
 	thread_exit ();
@@ -264,10 +269,12 @@ process_exec (void *f_name) {
 		return -1;
 	}
 	strlcpy(file_name, f_name, PGSIZE);
-	palloc_free_page(f_name);
-  bool success;
+	// palloc_free_page(f_name);
+  	bool success;
 
 	struct thread *cur_thread = thread_current();
+
+	uint64_t *old_pml4 = cur_thread->pml4;
 	
   if (cur_thread->running_file != NULL) {
       lock_acquire(&filesys_lock);
@@ -284,7 +291,7 @@ process_exec (void *f_name) {
 
   /* 2. 현재 컨텍스트(메모리 공간, pml4)를 정리(파괴)하여
    * 새 유저 프로세스로 '변신'할 준비를 함. */
-  process_cleanup ();
+//   process_cleanup ();
 
   /* 3. load() 함수를 호출하여 새 프로그램을 메모리에 적재. */
   success = load (file_name, &_if);
@@ -295,6 +302,7 @@ process_exec (void *f_name) {
   if (!success)
     return -1; // 로드 실패 (예: 파일 없음, 메모리 부족 등)
 
+  pml4_destroy(old_pml4);
   /* 5. do_iret()을 호출하여 유저 모드로 전환.
    * CPU 레지스터가 _if에 설정된 값(rip, rsp 등)으로 갱신되며,
    * 유저 프로그램의 진입점(rip)에서 실행을 시작.
@@ -789,81 +797,86 @@ static bool install_page (void *upage, void *kpage, bool writable);
  * or disk read error occurs. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
-		uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
-	ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
-	ASSERT (pg_ofs (upage) == 0);
-	ASSERT (ofs % PGSIZE == 0);
+        uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
+    ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+    ASSERT (pg_ofs (upage) == 0);
+    ASSERT (ofs % PGSIZE == 0);
 
-	file_seek (file, ofs);
-	while (read_bytes > 0 || zero_bytes > 0) {
-		/* Do calculate how to fill this page.
-		 * We will read PAGE_READ_BYTES bytes from FILE
-		 * and zero the final PAGE_ZERO_BYTES bytes. */
-		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
-		size_t page_zero_bytes = PGSIZE - page_read_bytes;
+    // 🚩 수정: file_seek을 제거합니다. Lazy Loading은 offset 기반 I/O를 사용해야 합니다.
+    // file_seek (file, ofs); 
+    
+    while (read_bytes > 0 || zero_bytes > 0) {
+        /* Do calculate how to fill this page. */
+        size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+        size_t page_zero_bytes = PGSIZE - page_read_bytes;
+        
+        /* 1. aux 구조체 동적 할당: 페이지 로딩 정보 저장 */
+        struct lazy_load_arg *arg = calloc(1, sizeof(struct lazy_load_arg));
+        if (arg == NULL)
+            return false;
 
-		/* Get a page of memory. */
-		uint8_t *kpage = palloc_get_page (PAL_USER);
-		if (kpage == NULL)
-			return false;
+        /* 2. 로딩 정보 채우기 */
+        arg->file = file; 
+        arg->ofs = ofs;
+        arg->read_bytes = page_read_bytes;
+        arg->zero_bytes = page_zero_bytes;
+        
+        /* 3. SPT에 VM_FILE 타입으로 등록 */
+        if (!vm_alloc_page_with_initializer(
+                VM_FILE, 
+                upage, 
+                writable,
+                lazy_load_segment, 
+                arg)) {
+            
+            free(arg); 
+            return false;
+        }
 
-		/* Load this page. */
-		if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes) {
-			palloc_free_page (kpage);
-			return false;
-		}
-		memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-		/* Add the page to the process's address space. */
-		if (!install_page (upage, kpage, writable)) {
-			printf("fail\n");
-			palloc_free_page (kpage);
-			return false;
-		}
-
-		/* Advance. */
-		read_bytes -= page_read_bytes;
-		zero_bytes -= page_zero_bytes;
-		upage += PGSIZE;
-	}
-	return true;
+        /* Advance. */
+        ofs += page_read_bytes;
+        read_bytes -= page_read_bytes;
+        zero_bytes -= page_zero_bytes;
+        upage += PGSIZE;
+    }
+    return true;
 }
 
 /* Create a minimal stack by mapping a zeroed page at the USER_STACK */
 static bool
 setup_stack (struct intr_frame *if_) {
-	uint8_t *kpage;
-	bool success = false;
+    // 스택의 가장 아래쪽 가상 주소 (USER_STACK - 1 페이지)를 계산합니다.
+    void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
+    
+    // 1. SPT에 익명 페이지(VM_ANON) 엔트리를 등록합니다.
+    bool success = vm_alloc_page_with_initializer (
+        // 💡 수정: 스택 마커를 VM_ANON과 OR 연산합니다.
+        VM_ANON | VM_MARKER_0, 
+        stack_bottom, 
+        true, // Writable
+        NULL, 
+        NULL  
+    );
+    
+    if (!success) {
+        return false;
+    }
 
-	kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-	if (kpage != NULL) {
-		success = install_page (((uint8_t *) USER_STACK) - PGSIZE, kpage, true);
-		if (success)
-			if_->rsp = USER_STACK;
-		else
-			palloc_free_page (kpage);
-	}
-	return success;
+    // 2. 즉시 Claim (물리 프레임 할당 및 매핑)
+    if (!vm_claim_page (stack_bottom)) {
+        // 💡 수정: 클레임 실패 시, SPT에서 페이지 엔트리를 제거해야 메모리 누수가 발생하지 않습니다.
+        struct page *p = spt_find_page(&thread_current()->spt, stack_bottom);
+        if (p) {
+            spt_remove_page(&thread_current()->spt, p); 
+        }
+        return false;
+    }
+
+    // 3. 스택 포인터 설정
+    if_->rsp = USER_STACK;
+    return true;
 }
 
-/* Adds a mapping from user virtual address UPAGE to kernel
- * virtual address KPAGE to the page table.
- * If WRITABLE is true, the user process may modify the page;
- * otherwise, it is read-only.
- * UPAGE must not already be mapped.
- * KPAGE should probably be a page obtained from the user pool
- * with palloc_get_page().
- * Returns true on success, false if UPAGE is already mapped or
- * if memory allocation fails. */
-static bool
-install_page (void *upage, void *kpage, bool writable) {
-	struct thread *t = thread_current ();
-
-	/* Verify that there's not already a page at that virtual
-	 * address, then map our page there. */
-	return (pml4_get_page (t->pml4, upage) == NULL
-			&& pml4_set_page (t->pml4, upage, kpage, writable));
-}
 #else
 /* From here, codes will be used after project 3.
  * If you want to implement the function for only project 2, implement it on the
@@ -947,7 +960,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
 				/* aux 구조체 동적 할당: 페이지별로 별도의 aux를 만듦 */
-		struct lazy_load_arg *arg = calloc(sizeof(struct lazy_load_arg));
+		struct lazy_load_arg *arg = calloc(1,sizeof(struct lazy_load_arg));
 		if(arg == NULL)
 			return false;
 
@@ -1020,4 +1033,24 @@ setup_stack (struct intr_frame *if_) {
 	success = true;
 	return success;
 }
+
+/* Adds a mapping from user virtual address UPAGE to kernel
+ * virtual address KPAGE to the page table.
+ * If WRITABLE is true, the user process may modify the page;
+ * otherwise, it is read-only.
+ * UPAGE must not already be mapped.
+ * KPAGE should probably be a page obtained from the user pool
+ * with palloc_get_page().
+ * Returns true on success, false if UPAGE is already mapped or
+ * if memory allocation fails. */
+static bool
+install_page (void *upage, void *kpage, bool writable) {
+	struct thread *t = thread_current ();
+
+	/* Verify that there's not already a page at that virtual
+	 * address, then map our page there. */
+	return (pml4_get_page (t->pml4, upage) == NULL
+			&& pml4_set_page (t->pml4, upage, kpage, writable));
+}
+
 #endif /* VM */
