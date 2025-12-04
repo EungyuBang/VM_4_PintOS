@@ -5,6 +5,16 @@
     "*.inc": "c",
     "pintos": "c",
     "interrupt.h": "c",
-    "init.h": "c"
+    "init.h": "c",
+    "array": "c",
+    "compare": "c",
+    "functional": "c",
+    "tuple": "c",
+    "type_traits": "c",
+    "utility": "c",
+    "memory_resource": "c",
+    "thread.h": "c",
+    "vm.h": "c",
+    "vaddr.h": "c"
   }
 }

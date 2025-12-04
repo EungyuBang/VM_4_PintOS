@@ -61,6 +61,10 @@ uninit_initialize (struct page *page, void *kva) {
  * PAGE 메모리 자체는 호출자가 해제한다. */
 static void
 uninit_destroy (struct page *page) {
-	struct uninit_page *uninit UNUSED = &page->uninit;
-	/* MOD7: UNINIT은 추가 자원이 없어 할 일 없음 */
+	struct uninit_page *uninit = &page->uninit;
+	
+	if(VM_TYPE(uninit->type) == VM_FILE && uninit->aux != NULL){
+		free (uninit->aux);
+		uninit->aux = NULL;
+	}
 }
