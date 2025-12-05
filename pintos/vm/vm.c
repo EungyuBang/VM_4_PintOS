@@ -229,14 +229,11 @@ vm_get_frame (void) {
 static void
 vm_stack_growth (void *addr) {
 	void *stack_bottom = pg_round_down (addr);
-
-	if(((uint8_t *)USER_STACK - (uint8_t *)stack_bottom) > 1 * 1024 * 1024) {
+	size_t diff = (size_t) ((uint8_t *) USER_STACK - (uint8_t *) stack_bottom);
+	if (diff > 1 * 1024 * 1024)
 		return;
-	}
-
-	/* 스택 페이지를 바로 할당하고 클레임 */
-	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true))
-		vm_claim_page (stack_bottom);
+	/* 스택 페이지는 등록만 해 두고 실제 클레임은 폴트 핸들러가 처리한다. */
+	vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true);
 }
 
 /* 쓰기 보호된 페이지에서의 폴트를 처리한다. */
@@ -250,21 +247,20 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page = NULL;
-
 	/* 잘못된 접근이면 실패 */
 	if (addr == NULL || is_kernel_vaddr (addr))
 		return false;
-
 	/* not-present가 아니고 쓰기 보호라면 처리 */
 	if (!not_present)
 		return vm_handle_wp (page);
-
+	
 	/* 페이지 조회 */
 	page = spt_find_page (spt, addr);
 	if (page == NULL) {
 		/* 스택 자동 성장 조건: 사용자 스택 포인터 근처인지 확인 */
 		void *rsp = (void *) (user ? f->rsp : thread_current ()->tf.rsp);
-		if(rsp == NULL) return false;
+		if (rsp == NULL)
+			return false;
 		//폴트가 난 주소는 rsp-8일 경우 USER_STACK~ rsp 사이가 스택으로 할당된 공간
 		if (addr >= rsp - 8 && addr < (void *) USER_STACK) {
 			vm_stack_growth (addr);
@@ -273,7 +269,6 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 		if (page == NULL)
 			return false;
 	}
-
 	return vm_do_claim_page (page);
 }
 
@@ -301,11 +296,10 @@ vm_claim_page (void *va) {
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
-
 	/* 연결 관계를 설정한다. */
 	frame->page = page;
 	page->frame = frame;
-
+	
 	/* 페이지의 VA와 프레임의 PA를 매핑하는 PTE를 삽입한다. */
 	if(!pml4_set_page(thread_current()->pml4, page->va, frame->kva, page->writable)) {
 		frame->page = NULL;
@@ -314,7 +308,6 @@ vm_do_claim_page (struct page *page) {
 		free (frame);
 		return false;
 	}
-
 	return swap_in (page, frame->kva);
 }
 

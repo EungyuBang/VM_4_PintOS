@@ -92,7 +92,7 @@ sm-random PASS
 alarm-zero PASS
 open-boundary PASS
 create-null PASS
-pt-grow-stack FAIL
+pt-grow-stack PASS
 fork-recursive PASS
 open-bad-ptr PASS
 mmap-inherit FAIL
@@ -129,7 +129,7 @@ create-exists PASS
 mmap-bad-off FAIL
 open-normal PASS
 bad-jump PASS
-pt-big-stk-obj FAIL
+pt-big-stk-obj PASS
 bad-jump2 PASS
 open-missing PASS
 create-empty PASS
