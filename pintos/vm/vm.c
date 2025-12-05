@@ -239,6 +239,7 @@ vm_stack_growth (void *addr) {
 /* 쓰기 보호된 페이지에서의 폴트를 처리한다. */
 static bool
 vm_handle_wp (struct page *page UNUSED) {
+	return false;
 }
 
 /* MOD5: 폴트 처리 */

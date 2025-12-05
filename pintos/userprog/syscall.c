@@ -352,6 +352,7 @@ void sys_read(struct intr_frame *f)
   int fd = f->R.rdi;
   void *buffer = (void *)f->R.rsi;
   unsigned size = f->R.rdx;
+  printf("[sys_read] fd=%d buffer=%p size=%u\n", fd, buffer, size);
 
   // if(size == 0) {
   //   f->R.rax = 0;
@@ -390,6 +391,7 @@ void sys_read(struct intr_frame *f)
   lock_acquire(&filesys_lock);
   int ret = file_read(file, buffer, size);
   lock_release(&filesys_lock);
+  printf("[sys_read] ret=%d\n", ret);
 	
   f->R.rax = ret;
 }
