@@ -14,6 +14,10 @@
 #include "devices/input.h"
 #include "filesys/filesys.h"
 #include "lib/string.h"
+#include "threads/vaddr.h"
+#ifdef VM
+#include "vm/vm.h"
+#endif
 
 
 void syscall_entry(void);
@@ -60,12 +64,36 @@ check_address(void *addr) {
 }
 
 /* 버퍼 전체가 유효한지 검사 */
-void
-check_buffer(void *buffer, size_t size) {
-    if (size == 0) return;
-    
-    check_address(buffer);
-    check_address(buffer + size - 1);
+static void
+check_buffer (struct intr_frame *f, void *buffer, size_t size, bool write_to_user) {
+	if (size == 0)
+		return;
+	if (buffer == NULL)
+		exit_with_status (-1);
+
+	uint8_t *start = buffer;
+	uint8_t *end = start + size - 1;
+
+  //버퍼가 차지하는 모든 페이지를 하나씩 검사
+	for (uint8_t *addr = pg_round_down (start); addr <= end; addr += PGSIZE) {
+		if (!is_user_vaddr (addr))
+			exit_with_status (-1);
+#ifdef VM
+		struct page *page = spt_find_page (&thread_current ()->spt, addr);
+		if (page == NULL) {
+			if (!vm_try_handle_fault (f, addr, true, write_to_user, true))
+				exit_with_status (-1);
+			page = spt_find_page (&thread_current ()->spt, addr);
+			if (page == NULL)
+				exit_with_status (-1);
+		}
+		if (write_to_user && !page->writable)
+			exit_with_status (-1);
+#else
+		if (pml4_get_page (thread_current ()->pml4, addr) == NULL)
+			exit_with_status (-1);
+#endif
+	}
 }
 
 /* 유저 문자열을 커널 공간으로 안전하게 복사 -> TOCTOU 상황 고려 */
@@ -330,7 +358,7 @@ void sys_read(struct intr_frame *f)
   //   return;
   // }
 
-  check_buffer(buffer, size);
+  check_buffer (f, buffer, size, true);
   // fd=0 -> 표준입력 : 키보드 입력
   if(fd == 0)
   {
@@ -362,7 +390,7 @@ void sys_read(struct intr_frame *f)
   lock_acquire(&filesys_lock);
   int ret = file_read(file, buffer, size);
   lock_release(&filesys_lock);
-
+	
   f->R.rax = ret;
 }
 
@@ -378,7 +406,7 @@ void sys_write(struct intr_frame *f)
   //   return;
   // }
 
-	check_buffer(buffer, size);							// 사용자가 넘겨준 buffer 주소를 읽어도 되는지 확인
+	check_buffer (f, (void *) buffer, size, false);							// 사용자가 넘겨준 buffer 주소를 읽어도 되는지 확인
 
   struct thread *cur_thread = thread_current();
   
