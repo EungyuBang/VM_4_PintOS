@@ -317,7 +317,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst, struct supple
       vm_initializer *init = src_page->uninit.init;
       void *aux = src_page->uninit.aux;
 
-      // [Deep Copy] aux 구조체 메모리 할당
+      // aux 구조체 메모리 할당
       struct lazy_load_info *new_aux = malloc(sizeof(struct lazy_load_info));
       if (new_aux == NULL) return false;
 
@@ -342,11 +342,6 @@ supplemental_page_table_copy (struct supplemental_page_table *dst, struct supple
       if (!vm_claim_page (upage)) return false;
 
       struct page *dst_page = spt_find_page (dst, upage);
-            
-      // [중요] 부모 프레임이 없는 경우(Swap Out 등) 강제 로드
-      // if (src_page->frame == NULL) {
-      //   vm_do_claim_page(src_page); 
-      // }
             
       // 물리 메모리 내용 복사
       memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
