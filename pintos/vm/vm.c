@@ -303,55 +303,57 @@ supplemental_page_table_init (struct supplemental_page_table *spt UNUSED)
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst, struct supplemental_page_table *src) 
 {
-	struct hash_iterator i; 
-	// 부모 해시 테이블의 첫 번째 요소부터 탐색 시작 
-	hash_first(&i, &src->pages);
+  struct hash_iterator i;
+  hash_first (&i, &src->pages);
 
-	while(hash_next(&i)) {
-		struct page *src_page = hash_entry(hash_cur(&i), struct page, hash_elem);		
+  while (hash_next (&i)) {
+    struct page *src_page = hash_entry (hash_cur (&i), struct page, hash_elem);
+    enum vm_type type = src_page->operations->type;
+    void *upage = src_page->va;
+    bool writable = src_page->writable;
 
-		enum vm_type type = src_page->operations->type;
-		void *upage = src_page->va;
-		bool writable = src_page->writable;
+    /* 1. UNINIT 페이지 처리 (Lazy Loading 대기 중) */
+    if (VM_TYPE(type) == VM_UNINIT) {
+      vm_initializer *init = src_page->uninit.init;
+      void *aux = src_page->uninit.aux;
 
-		if(type == VM_UNINIT) {
-			vm_initializer *init = src_page->uninit.init; // lazy_load_segment 함수 
-			void *aux = src_page->uninit.aux; // lazy_load_info 구조체
+      // [Deep Copy] aux 구조체 메모리 할당
+      struct lazy_load_info *new_aux = malloc(sizeof(struct lazy_load_info));
+      if (new_aux == NULL) return false;
 
-			struct lazy_load_info *new_aux = malloc(sizeof(struct lazy_load_info));
-			if(new_aux == NULL) {
-				return false;
-			} 
-			// 부모 aux 자식에게 그대로 복사하고
-			memcpy(new_aux, aux, sizeof(struct lazy_load_info));
+      // 내용 복사
+      memcpy(new_aux, aux, sizeof(struct lazy_load_info));
 
-			// 자식이 실제 실행될 때 실행될 정보 spt에 담아놓기
-			if(!vm_alloc_page_with_initializer(src_page->uninit.type, upage, writable, init, new_aux)) {
-				free(new_aux);
-				return false;
-			}
-		}
-		else {
-			// 부모랑 똑같은 type, upage, writable 상태로 spt에 페이지 만들고
-			if(!vm_alloc_page(type, upage, writable)) {
-				return false;
-			}
-			
-			// 새로운 물리 메모리 할당
-			if(!vm_claim_page(upage)) {
-				return false;
-			}
+      // file_reopen 으로 파일 객체 독립 생성
+      if (new_aux->file != NULL) {
+        new_aux->file = file_reopen(new_aux->file); 
+      }
 
-			// 자식 페이지 주소 spt에서 찾아주고
-			struct page *dst_page = spt_find_page(dst, upage);
+      // 부모의 원본 타입(src_page->uninit.type)을 전달
+      if (!vm_alloc_page_with_initializer (src_page->uninit.type, upage, writable, init, new_aux)) {
+        free(new_aux);
+        return false;
+      }
+    }
+    /* 2. 이미 로드된 페이지 (VM_FILE, VM_ANON) */
+    else {
+      if (!vm_alloc_page (type, upage, writable)) return false;
 
-			// 복사 
-			memcpy(dst_page->frame->kva, src_page->frame->kva, PGSIZE);
-		}
-	}
-	return true;
+      if (!vm_claim_page (upage)) return false;
+
+      struct page *dst_page = spt_find_page (dst, upage);
+            
+      // [중요] 부모 프레임이 없는 경우(Swap Out 등) 강제 로드
+      // if (src_page->frame == NULL) {
+      //   vm_do_claim_page(src_page); 
+      // }
+            
+      // 물리 메모리 내용 복사
+      memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+    }
+  }
+  return true;
 }
-
 
 /* Free the resource hold by the supplemental page table */
 void
