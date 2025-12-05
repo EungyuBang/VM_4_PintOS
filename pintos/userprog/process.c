@@ -261,47 +261,54 @@ error:
 int
 process_exec (void *f_name) {
   // f_name은 "program_name args..." 형태의 '명령어 전체' 문자열.
-	// 새로 실행할 파일의 이름임 
+    // 새로 실행할 파일의 이름임 
   // char *file_name = f_name;
-	char *file_name = palloc_get_page(PAL_ZERO);
-	if(file_name == NULL) {
-		return -1;
-	}
-	strlcpy(file_name, f_name, PGSIZE);
-	// palloc_free_page(f_name);
-  	bool success;
+    char *file_name = palloc_get_page(PAL_ZERO);
+    if(file_name == NULL) {
+        return -1;
+    }
+    strlcpy(file_name, f_name, PGSIZE);
+	palloc_free_page(f_name);
 
-	struct thread *cur_thread = thread_current();
-
-	uint64_t *old_pml4 = cur_thread->pml4;
-	
+    bool success; 
+    struct intr_frame _if; 
+    struct thread *cur_thread = thread_current();
+    uint64_t *old_pml4 = cur_thread->pml4;
+    
   if (cur_thread->running_file != NULL) {
       lock_acquire(&filesys_lock);
-			// 다른 파일로 변경 전, 부모와 같이 참조하고 있는 파일 닫아줌
+            // 다른 파일로 변경 전, 부모와 같이 참조하고 있는 파일 닫아줌
       file_close(cur_thread->running_file);
       lock_release(&filesys_lock);
       cur_thread->running_file = NULL;
   }
   /* 1. 유저 모드 진입을 위한 '임시' CPU 레지스터(intr_frame)를 설정. */
-  struct intr_frame _if;
+  // 💡 '_if' 변수 선언이 복원되었으므로, 여기서 설정을 시작합니다.
   _if.ds = _if.es = _if.ss = SEL_UDSEG;
   _if.cs = SEL_UCSEG;
   _if.eflags = FLAG_IF | FLAG_MBS; // 인터럽트 활성화
 
   /* 2. 현재 컨텍스트(메모리 공간, pml4)를 정리(파괴)하여
    * 새 유저 프로세스로 '변신'할 준비를 함. */
-//   process_cleanup ();
+  process_cleanup ();
+
+  supplemental_page_table_init(&cur_thread->spt);
 
   /* 3. load() 함수를 호출하여 새 프로그램을 메모리에 적재. */
-  success = load (file_name, &_if);
+  success = load (file_name, &_if); // 💡 'success'와 '_if' 변수 사용
 
   /* 4. f_name은 process_create_initd에서 할당(palloc)한 복사본이므로,
    * 로드가 끝났으니 해당 메모리 페이지를 해제. */
-  palloc_free_page (file_name);
-  if (!success)
-    return -1; // 로드 실패 (예: 파일 없음, 메모리 부족 등)
+  palloc_free_page (file_name); 
 
-  pml4_destroy(old_pml4);
+    if (!success) {
+        // load 실패 시: 새로 초기화한 SPT 정리
+        supplemental_page_table_kill(&cur_thread->spt);
+        return -1;
+    }
+
+  // process_cleanup이 이미 PML4를 파괴했으므로, pml4_destroy(old_pml4)는 제거합니다.
+  
   /* 5. do_iret()을 호출하여 유저 모드로 전환.
    * CPU 레지스터가 _if에 설정된 값(rip, rsp 등)으로 갱신되며,
    * 유저 프로그램의 진입점(rip)에서 실행을 시작.
@@ -341,6 +348,7 @@ process_wait (tid_t child_tid UNUSED) {
 		return -1 ;
 	}
 
+	lock_acquire(&filesys_lock);
 	// 두번 wait 방지
 	// lock_acquire(&filesys_lock);
 	if(search_child->waited){
@@ -348,7 +356,7 @@ process_wait (tid_t child_tid UNUSED) {
 		return -1;
 	}
 	search_child->waited = true;
-	// lock_release(&filesys_lock);
+	lock_release(&filesys_lock);
 	
 	// 부모는 자식의 개인 세마포어를 기다리면서 sleep
 	sema_down(&search_child->wait_sema);

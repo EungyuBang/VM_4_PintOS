@@ -144,8 +144,12 @@ spt_insert_page (struct supplemental_page_table *spt,
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
-	vm_dealloc_page (page);
-	return;
+	if (hash_delete(&spt->pages, &page->hash_elem) == NULL) {
+        // 항목이 없으면 문제가 있지만, 일단 진행
+    }
+    
+    // 2. 페이지 자원 해제 (destroy 및 free)
+    vm_dealloc_page (page);
 }
 
 /* Get the struct frame, that will be evicted. */
@@ -274,9 +278,15 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
     if(write && !page->writable) {
         return false;
     }
-
-    // 5. 페이지 할당 및 매핑 시도
-    return vm_do_claim_page (page);
+	
+	if (!vm_do_claim_page (page)) {
+        // 🚨 Claim 실패 시, SPT에서 해당 페이지를 제거합니다.
+        // 이는 로드 실패나 swap_in 실패 시 발생한 불완전한 페이지 항목을 정리합니다.
+        spt_remove_page (spt, page); // spt_remove_page는 내부적으로 vm_dealloc_page를 호출해야 함
+        return false; 
+    }
+    
+    return true; // Claim 성공
 }
 
 /* Free the page.
@@ -323,17 +333,17 @@ vm_do_claim_page (struct page *page) {
 		return false;
 	}
 
-	//페이지 내용 로드 (UNINIT -> ANON/FILE)
-	// if(!swap_in(page, frame->kva)) {
-	// 	//swap_in 실패 : 매핑 + 프레임 모두 정리
-	// 	pml4_clear_page(curr->pml4, page->va);
-	// 	frame->page = NULL;
-	// 	page->frame = NULL;
-	// 	vm_free_frame(frame);
-	// 	return false;
-	// }
+	// 페이지 내용 로드 (UNINIT -> ANON/FILE)
+    if (!swap_in(page, frame->kva)) {
+        // swap_in 실패 시: 매핑 제거 및 프레임 정리 (Clean Up)
+        pml4_clear_page(curr->pml4, page->va);
+        frame->page = NULL;
+        page->frame = NULL;
+        vm_free_frame(frame);
+        return false;
+    }
 
-	return swap_in (page, frame->kva);
+    return true;
 }
 
 /* Initialize new supplemental page table */
@@ -343,7 +353,6 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 	hash_init(&spt->pages, page_hash, page_less, NULL);
 }
 
-/* Copy supplemental page table from src to dst */
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst,
         struct supplemental_page_table *src) {
@@ -353,98 +362,88 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
 
     while(hash_next(&i)) {
         struct page *src_page = hash_entry(hash_cur(&i), struct page, hash_elem);
-        enum vm_type type = page_get_type(src_page);
+        enum vm_type src_type = page_get_type(src_page); // 원본 페이지의 실제 타입
 
-        void *upage = src_page->va; // <-- Pintos에서 사용하는 가상 주소 변수는 upage/va
+        void *upage = src_page->va;
         bool writable = src_page->writable;
 
-        // 💡 VM_FILE (LOADED) 타입은 COW 미구현 시 실패 처리 (이전 로직 유지)
-        // if (type == VM_FILE && src_page->frame != NULL) {
-        //      goto fail; 
-        // }
-
-        /* ---------- [1] UNINITIALIZED PAGE (Lazy Loading Info Copy) ---------- */
-        if (type == VM_UNINIT) {
+        /* 1. 🔍 UNINIT 페이지 (Lazy Loading: VM_ANON 또는 VM_FILE) 처리 */
+        if (src_type == VM_UNINIT) {
             
-            // Pintos의 vm/vm.h에 struct lazy_load_arg와 유사한 구조체가 있어야 함
-            // 여기서는 원본 코드의 struct lazy_load_arg 대신 src_page->uninit.aux를 사용합니다.
-            struct lazy_load_arg *src_aux = src_page->uninit.aux;
-            struct lazy_load_arg *dst_aux = NULL;
-            vm_initializer *init = src_page->uninit.init;
+            struct uninit_page *uninit = &src_page->uninit;
+            void *aux = uninit->aux;
+            bool aux_copied = false;
             
             // VM_FILE 타입인 경우에만 aux 구조체를 깊은 복사하고 file_reopen
-            if (VM_TYPE(src_page->uninit.type) == VM_FILE && src_aux != NULL) {
+            if (VM_TYPE(uninit->type) == VM_FILE && uninit->aux != NULL) {
                 
-                // 1. 자식을 위한 aux 구조체 메모리 할당
+                // VM_FILE의 aux 구조체를 복사하여 파일 포인터 독립성 확보 (exec-once 통과 핵심)
+                struct lazy_load_arg *src_aux = uninit->aux;
+                struct lazy_load_arg *dst_aux = NULL;
+
                 dst_aux = (struct lazy_load_arg *)calloc(1, sizeof(struct lazy_load_arg));
-                if (dst_aux == NULL) {
-                    goto fail;
-                }
-                
-                // 2. 부모의 파일 로딩 정보를 자식으로 복사
+                if (dst_aux == NULL) goto fail;
+
                 memcpy (dst_aux, src_aux, sizeof(struct lazy_load_arg));
-                
-                // 3. 파일 포인터를 file_reopen으로 갱신 (★ 독립성 확보)
-                dst_aux->file = file_reopen(src_aux->file);
+   
+                // ★ 독립적인 파일 포인터 할당
+                dst_aux->file = file_reopen(src_aux->file); 
                 if (dst_aux->file == NULL) {
                     free (dst_aux);
                     goto fail;
                 }
-            }
-            // VM_ANON의 VM_UNINIT 상태는 aux가 NULL이어야 하므로 dst_aux는 NULL 유지.
 
-            /* 4. 자식 SPT에 부모와 똑같은 UNINIT 페이지 생성 (Lazy Copy) */
+                aux = dst_aux;
+                aux_copied = true;
+            }
+            // VM_ANON UNINIT은 aux가 NULL이므로 기존 aux를 그대로 사용합니다.
+
+            /* 자식 SPT에 부모와 똑같은 UNINIT 페이지 생성 */
             if (!vm_alloc_page_with_initializer (
-                    src_page->uninit.type, 
+                    uninit->type, 
                     upage, 
                     writable,
-                    init, 
-                    (dst_aux == NULL) ? src_aux : dst_aux)) // aux 포인터 설정
+                    uninit->init, 
+                    aux)) // aux는 독립된 파일 포인터 또는 NULL
             {
-                // 실패 시 정리: VM_FILE 타입이었으면 file_close 및 aux 해제
-                if (dst_aux != NULL) {
-                    file_close(dst_aux->file);
-                    free (dst_aux);
+                if (aux_copied) {
+                    // 실패 시 파일 포인터 및 aux 메모리 정리
+                    file_close(((struct lazy_load_arg *)aux)->file);
+                    free (aux);
                 }
                 goto fail;
             }
             
-            // 💡 VM_UNINIT은 Lazy Loading이므로, 이 단계에서 vm_claim_page를 호출하면 안 됩니다.
-            //    vm_claim_page 호출은 자식이 페이지 폴트를 일으켰을 때 수행됩니다.
+            // 💡 UNINIT 페이지는 Lazy Loading이므로 vm_claim_page를 호출하지 않습니다.
 
             continue;
         } 
         
-        /* ---------- [2] 기타 로드된 페이지 (VM_ANON 등) 처리 (Deep Copy) ---------- */
+        /* 2. 🗃️ ANON 페이지 (이미 로드됨) 처리 (Deep Copy) */
         else {
-            // 이 블록은 VM_ANON 페이지를 처리하기 위한 로직이어야 합니다.
-
-            // 1. 자식 SPT에 VM_ANON 페이지 항목을 생성 (Lazy)
-            if (!vm_alloc_page_with_initializer (
-                        type, 
-                        upage, 
-                        writable,
-                        NULL, // VM_ANON은 init이 NULL
-                        NULL)) {
+            // VM_ANON 페이지 또는 로드된 VM_FILE 페이지를 Deep Copy합니다.
+            
+            // 1. 자식 SPT에 페이지 항목을 생성
+            if (!vm_alloc_page (src_type, upage, writable)) {
                 goto fail;
             }
 
-            // 2. 페이지에 프레임 할당 및 매핑 (Claim) - 부모 문맥에서 수행 시 오류 가능성 있음.
-            //    단, 현재 Pintos VM 구현에서는 claim을 호출하여 내용을 복사하도록 요구하는 경우가 많습니다.
+            // 2. 페이지에 프레임 할당 및 매핑 (Claim)
+            // vm_do_claim_page는 thread_current()->spt를 사용하므로, 
+            // 현재 부모 스레드의 SPT에 upage가 없는 경우 실패할 수 있습니다.
+            // 그러나 Deep Copy 로직에서는 이 Claim이 성공해야 복사를 진행할 수 있습니다.
             if (!vm_claim_page (upage)) {
-                 // 💡 이 부분이 실패하면, vm_claim_page가 thread_current()->spt를 사용하기 때문일 수 있습니다.
                 goto fail;
             }
 
-            // 3. 자식 SPT에서 방금 만든 페이지 찾아옴 (dst SPT에서 찾음)
+            // 3. 자식 SPT에서 방금 만든 페이지 찾아옴
             struct page *dst_page = spt_find_page (dst, upage);
             
             // 4. 부모 페이지가 실제 프레임을 가졌는지 확인
             if (dst_page == NULL || src_page->frame == NULL) {
-                 // dst_page가 NULL인 경우는 vm_claim_page 실패가 선행되었을 가능성이 높습니다.
-                 // src_page->frame이 NULL이면 Swapped Out 상태이므로 복사 생략 (자식이 폴트 시 로드함).
-                 // 로드된 상태가 아니므로 continue
-                 if (src_page->frame == NULL) continue;
+                 // 부모가 Swapped Out된 경우, Deep Copy를 시도할 수 없으므로 실패 처리.
+                 // (Swapped Out 페이지를 복사하지 않고 넘어가는 로직을 원하면 continue로 변경해야 함)
+                 if (src_page->frame == NULL) continue; // <- Swapped Out 페이지 복사 생략
                  goto fail;
             }
 
@@ -464,18 +463,11 @@ fail:
 /* Free the resource hold by the supplemental page table */
 void
 supplemental_page_table_kill (struct supplemental_page_table *spt) {
-	/* TODO: Destroy all the supplemental_page_table hold by thread and
-	 * TODO: writeback all the modified contents to the storage. */
-	hash_clear(&spt->pages, page_destroy);
+if (spt == NULL)
+		return;
 
-    // 2. hash_destroy가 하던 대로, 해시 버킷 배열(spt->pages.buckets) 자체를 해제합니다.
-    //    이는 hash_init 시에 할당된 메모리입니다.
-    free(spt->pages.buckets);
-    
-    // (선택 사항: 내부 상태 정리)
-    spt->pages.buckets = NULL;
-    spt->pages.bucket_cnt = 0;
-    spt->pages.elem_cnt = 0;
+	hash_clear(&spt->pages, page_destroy);
+	// free(spt->pages.buckets);
 }
 
 static unsigned
@@ -495,22 +487,32 @@ page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
     return pa->va < pb->va;
 }
 
-/*
- * Description: 해시 테이블의 각 요소를 순회하며 호출되어, 
- * 페이지 구조체와 관련된 모든 자원을 해제합니다.
- */
 static void
 page_destroy (struct hash_elem *e, void *aux) {
-    // 1. hash_elem으로부터 struct page 구조체 포인터를 얻습니다.
-    struct page *page = hash_entry(e, struct page, hash_elem);
+    struct page *page = hash_entry (e, struct page, hash_elem);
 
-    // 2. vm_dealloc_page 내부에서 destroy(page) 매크로가 
-    //    이미 타입별 소멸 핸들러를 호출합니다.
-    //    따라서 수동 호출 부분(if-destroy)은 제거합니다.
+    if (page->operations->type == VM_UNINIT) {
+        struct uninit_page *uninit = &page->uninit;
+        
+        if (VM_TYPE (uninit->type) == VM_FILE && uninit->aux != NULL) {
+            
+            // aux 포인터를 lazy_load_arg 구조체로 캐스팅하여 파일 자원에 접근
+            struct lazy_load_arg *lla = (struct lazy_load_arg *)uninit->aux;
+            // 1. 파일 자원을 닫습니다 (파일 포인터 누수 방지).
+            if (lla->file != NULL) {
+                file_close(lla->file);
+            }
+            
+            // 2. aux 구조체 메모리 해제.
+            free (uninit->aux); 
+            
+            // 3. 이중 해제 방지를 위해 포인터를 NULL로 설정합니다.
+            uninit->aux = NULL; 
+        }
+    }
 
-    // 3. struct page 구조체 자체를 해제합니다.
-    //    vm_dealloc_page가 destroy(page)와 free(page)를 모두 수행합니다.
-    vm_dealloc_page(page);
+    // 페이지 구조체 자체와 타입별 자원 정리 (destroy + free)
+    vm_dealloc_page (page); 
 }
 
 /* Free the frame. */
