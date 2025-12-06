@@ -15,6 +15,7 @@
 #include "filesys/filesys.h"
 #include "lib/string.h"
 #include "vm/vm.h"
+#include "vm/file.h"
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
@@ -163,6 +164,12 @@ syscall_handler (struct intr_frame *f)
       break;
     case SYS_CLOSE:   /* Close a file. */
       sys_close(f);
+      break;
+    case SYS_MMAP:
+      sys_mmap(f);
+      break;
+    case SYS_MUNMAP:
+      sys_munmap(f);
       break;
     default:
       /* 미구현 시스템 콜 */
@@ -467,5 +474,59 @@ void sys_close(struct intr_frame *f)
 
   lock_acquire(&filesys_lock);
   file_close(file);
+  lock_release(&filesys_lock);
+}
+
+void sys_mmap(struct intr_frame *f)
+{
+  void *addr = (void*)f->R.rdi;
+  size_t length = (size_t)f->R.rsi;
+  int writable = (int)f->R.rdx;
+  int fd = (int)f->R.r10;
+  off_t offset = (off_t)f->R.r8;
+
+  // 오프셋 4KB 단위인지,                                   주소가 4KB 단위로 정렬 됐는지
+  if(offset % PGSIZE != 0 || addr == NULL || length == 0 || pg_ofs(addr) != 0 || !is_user_vaddr(addr)) {
+    f->R.rax = NULL;
+    return;
+  }
+
+  if(!is_user_vaddr((void *)((uint64_t)addr + length)) || ((uint64_t)addr + length < (uint64_t)addr)) {
+    f->R.rax = NULL;
+    return;
+  }
+
+  if(fd == 0 || fd == 1) {
+    f->R.rax = NULL;
+    return;
+  }
+
+  struct thread *cur_thread = thread_current();
+  if(fd < 0 || fd >= FDT_LIMIT || cur_thread->fd_table[fd] == NULL) {
+    f->R.rax = NULL;
+    return;
+  }
+
+  struct file *file = cur_thread->fd_table[fd];
+
+  if(file_length(file) == 0) {
+    f->R.rax = NULL;
+    return;
+  }
+
+  lock_acquire(&filesys_lock);
+  void *ret_addr = do_mmap(addr, length, writable, file, offset);
+  lock_release(&filesys_lock);
+
+  f->R.rax = (uint64_t)ret_addr;
+  return;
+}
+
+void sys_munmap(struct intr_frame *f) 
+{
+  void *addr = (void*)f->R.rdi;
+
+  lock_acquire(&filesys_lock);
+  do_munmap(addr);
   lock_release(&filesys_lock);
 }

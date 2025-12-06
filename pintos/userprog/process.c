@@ -286,6 +286,8 @@ process_exec (void *f_name) {
    * 새 유저 프로세스로 '변신'할 준비를 함. */
   process_cleanup ();
 
+	supplemental_page_table_init(&cur_thread->spt);
+
   /* 3. load() 함수를 호출하여 새 프로그램을 메모리에 적재. */
   success = load (file_name, &_if);
 
@@ -396,6 +398,9 @@ process_exit (void) {
       if (!lock_held) lock_release(&filesys_lock);  
       cur_thread->running_file = NULL;
    } 
+
+	 // mmap
+	 process_cleanup();
 	
 	// 부모가 죽기 전 자식 탐색 -> 부모가 먼저 죽는 경우
 	// 부팅 쓰레드는 여기를 오지 않지만, 부팅 쓰레드를 제외하고, 부모 자식의 관계가 있을 수 있어서 exit시 자식 탐색 후 다 깨워줌
@@ -420,7 +425,7 @@ process_exit (void) {
 		sema_down(&cur_thread->exit_sema); // 부모가 처리할 때까지 대기 -> 이후 깨어나면 밑에 process_cleanup 만나서 즉사 
 	 }
 
-	process_cleanup ();
+	// process_cleanup ();
 }
 
 /* Free the current process's resources. */
@@ -605,7 +610,7 @@ load (const char *file_name, struct intr_frame *if_) {
 		return false;
 	}
 
-	supplemental_page_table_init(&t->spt);
+	// supplemental_page_table_init(&t->spt);
 
 	/* 1️⃣ 페이지 테이블 생성 및 활성화 */
 	t->pml4 = pml4_create ();               // 새 pml4(페이지 테이블) 생성
@@ -884,13 +889,19 @@ install_page (void *upage, void *kpage, bool writable) {
 // 	uint32_t zero_bytes;
 // };
 
-static bool
+bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
 	/* TODO: This called when the first page fault occurs on address VA. */
 	/* TODO: VA is available when calling this function. */
 
 	struct lazy_load_info *info = (struct lazy_load_info *)aux; 
+
+	// lazy_load_info 구조체 free 되기 전 page 내부에 있는 file_page 구조체에 저장 -> write back 시 무슨 파일 수정했는지 알기 위해서 필요 !!
+	page->file.file = info->file;
+	page->file.ofs = info->ofs;
+	page->file.read_bytes = info->read_bytes;
+	page->file.zero_bytes = info->zero_bytes;
 
 	file_seek(info->file, info->ofs);
 
@@ -946,11 +957,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes,
 
 		// vm_alloc_page_with_initializer 실행 - 실패시 메모리 해제 + false 반환 
 		// VM_FILE 타입의 페이지를, upage 주소에 만들고, 나중에 lazy_load_segment 함수를 써서 채워줘, 파일 정보는 aux에 들어 있음
+
+		// enum vm_type segment_type = writable ? VM_ANON : VM_FILE;
+
 		if(!vm_alloc_page_with_initializer(VM_FILE, upage, writable, lazy_load_segment, aux)) {
 			free(aux);
 			return false;
 		}
-
+	
 		// 반복문 돌 때마다 파일 크기 업데이트
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
@@ -961,27 +975,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes,
 }
 
 /* Create a PAGE of stack at the USER_STACK. Return true on success. */
-// static bool setup_stack (struct intr_frame *if_) {
-// 	bool success = false;
-// 	// 스택 시작점 -> USER_STACK -> 4KB 만큼 확장 할거니까 USER_STACK - PGSIZE  
-// 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
-// 	/* TODO: Map the stack on stack_bottom and claim the page immediately.
-// 	 * TODO: If success, set the rsp accordingly.
-// 	 * TODO: You should mark the page is stack. */
-// 	/* TODO: Your code goes here */
-// 	/* 1. 스택 페이지 생성 (VM_MARKER_0 추가) */
-// 	// VM_ANON + VM_MARKER_0 인 페이지 만들기 
-// 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
-// 		/* 2. 즉시 할당 (스택은 바로 씀) */
-// 		// STACK_BOTTOM 기준으로 페이지 즉시 할당
-// 		success = vm_claim_page (stack_bottom);
-// 		// 스택 공간 할당 성공시 스택 시작점은 USER_STACK -> rsp = USER_STACK
-// 		if (success) {
-// 			if_->rsp = USER_STACK;
-// 		}
-// 	}
-// 	return success;
-// }
 
 static bool
 setup_stack (struct intr_frame *if_) {

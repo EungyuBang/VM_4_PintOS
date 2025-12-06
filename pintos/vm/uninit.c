@@ -10,6 +10,7 @@
 
 #include "vm/vm.h"
 #include "vm/uninit.h"
+#include "userprog/process.h"
 
 static bool uninit_initialize (struct page *page, void *kva);
 static void uninit_destroy (struct page *page);
@@ -68,3 +69,15 @@ uninit_destroy (struct page *page) {
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
 }
+
+// static void uninit_destroy (struct page *page) {
+//   struct uninit_page *uninit = &page->uninit;
+//   struct lazy_load_info *aux = (struct lazy_load_info *) uninit->aux;
+    
+//   if (aux != NULL) {
+//     if (aux->file != NULL) {
+//       file_close(aux->file); // 
+//     }
+//    free(aux);
+//   }
+// }

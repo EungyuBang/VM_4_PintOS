@@ -2,13 +2,15 @@
 
 #include "vm/vm.h"
 #include "devices/disk.h"
-
+#include "threads/vaddr.h"
+#include "lib/kernel/bitmap.h"
 /* DO NOT MODIFY BELOW LINE */
 static struct disk *swap_disk;
 static bool anon_swap_in (struct page *page, void *kva);
 static bool anon_swap_out (struct page *page);
 static void anon_destroy (struct page *page);
-
+// swap
+struct bitmap *swap_table;
 /* DO NOT MODIFY this struct */
 static const struct page_operations anon_ops = {
 	.swap_in = anon_swap_in,
@@ -17,12 +19,21 @@ static const struct page_operations anon_ops = {
 	.type = VM_ANON,
 };
 
+
 /* Initialize the data for anonymous pages */
 // 11주차 익명 페이지용 초기화 함수
 void
 vm_anon_init (void) {
 	/* TODO: Set up the swap_disk. */
-	swap_disk = NULL;
+	swap_disk = disk_get(1, 1);
+	
+	if(swap_disk == NULL) {
+		return;
+	}
+
+	// 전체 스왑 슬롯 수 계산
+	size_t swap_slot_cnt = disk_size(swap_disk) / (PGSIZE / DISK_SECTOR_SIZE);
+	swap_table = bitmap_create(swap_slot_cnt);
 }
 
 /* Initialize the file mapping */
