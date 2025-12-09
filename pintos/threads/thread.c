@@ -569,6 +569,10 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->parent = NULL;
 	t->waited = false;
 	t->exit_status = 0;
+#ifdef VM
+	list_init(&t->mmap_list);
+	t->next_mapid = 1;
+#endif
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

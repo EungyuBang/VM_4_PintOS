@@ -117,7 +117,6 @@ struct thread {
 	int next_fd;
 	// 10주차 rox
 	struct file *running_file;
-
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	// pml4는 스레드가 아니라, 해당 스레드(프로세스)가 사용하는 '가상 메모리 주소록' 그 자체를 가리키는 포인터
@@ -126,6 +125,12 @@ struct thread {
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+
+	//쓰레드가 가지고 있는 모든 mmap 매핑을 연결 리스트로 관리한다.
+	struct list mmap_list;
+
+	//각 매핑에 고유 ID를 부여하기 위한 카운터
+	mapid_t next_mapid;
 #endif
 
 	/* Owned by thread.c. */

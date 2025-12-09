@@ -364,6 +364,12 @@ process_exit (void) {
 	// 현재 쓰레드의 주체는 자식 쓰레드
 	struct thread *cur_thread = thread_current ();
 
+#ifdef VM
+	while(!list_empty(&cur_thread->mmap_list)) {
+		struct mmap_desc *desc = list_entry(list_front(&cur_thread->mmap_list), struct mmap_desc, elem);
+		do_munmap((void *)desc->addr);
+	}
+#endif
 	// 📌 수정 부분
 	// 쓰레드 죽기 전에, 파일 디스크립터 정리
 	 if(cur_thread->fd_table != NULL) {

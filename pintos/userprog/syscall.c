@@ -19,6 +19,9 @@
 #include "vm/vm.h"
 #endif
 
+#define MAP_FAILED ((void *) -1)
+static void sys_mmap(struct intr_frame *f);
+static void sys_munmap(struct intr_frame *f);
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame *);
@@ -188,6 +191,14 @@ syscall_handler (struct intr_frame *f)
     case SYS_CLOSE:   /* Close a file. */
       sys_close(f);
       break;
+
+    case SYS_MMAP:    
+      sys_mmap(f);
+      break;
+    case SYS_MUNMAP:  
+      sys_munmap(f);
+      break;
+    
     default:
       /* 미구현 시스템 콜 */
       printf("Unimplemented system call: %d\n", syscall_num);
@@ -196,7 +207,75 @@ syscall_handler (struct intr_frame *f)
   }
 }
 
+static void sys_mmap(struct intr_frame *f){
+#ifdef VM
+  void *addr = (void *)f->R.rdi;    //매핑 시작 가상주소
+  size_t length = f->R.rsi;         //매핑할 길이
+  int writable = f->R.rdx;          //쓰기 가능 여부
+  int fd = f->R.r10;                //매핑할 파일의 fd 
+  off_t offset = f->R.r8;           //파일 안에서 시작할 offset
+  struct thread *cur = thread_current();
 
+  //pg_ofs(addr) != 0 : 시작 주소가 페이지 경계인가 
+  //offset % PGSIZE != 0 : 파일 오프셋이 페이지 단위인가
+  if(addr == NULL || length == 0 || pg_ofs(addr) != 0 || offset % PGSIZE != 0 || 
+  !is_user_vaddr(addr)) {
+    f->R.rax = (uint64_t) MAP_FAILED;
+    return;
+  }
+
+  // 끝 주소 계산 유효성 검사
+  uint64_t end = (uint64_t) addr + length;
+  /*
+  end < (uint64_t) addr: 부호없는 덧셈에서 overflow 발생여부
+  end == 0 : 위 overflow 중에서도 정확히 2^64가 되는 경우
+  is_user_vaddr((void *)(end -1)) : 매핑할 마지막 바이트가 사용자 주소공간(0 ~ PHYS_BASE) 안에 있지 않은 경우
+  */
+  if(end < (uint64_t) addr || end == 0 || !is_user_vaddr((void *) (end -1))) {
+    f->R.rax = (uint64_t) MAP_FAILED;
+    return;
+  }
+
+  //FD로 매핑할 수 있는 실존하는 파일이 있는가
+  if(fd < 2 || fd >= FDT_LIMIT || cur->fd_table[fd] == NULL) {
+    f->R.rax = (uint64_t) MAP_FAILED;
+    return;
+  }
+
+  //cur->fd_table[fd]가 타 시스템콜에서 동시 실행 방지
+  //file_reopen으로 독립 핸들을 만듬. (다른 시스템콜이 재사용할때 close 등으로 닫힐 수 있음)
+  lock_acquire(&filesys_lock);
+  struct file *reopen = file_reopen(cur->fd_table[fd]);
+  lock_release(&filesys_lock);
+  if(reopen == NULL) {
+    f->R.rax = (uint64_t) MAP_FAILED;
+    return;
+  }
+
+  //검증 모두 통과하고 VM계층에 실제 매핑 생성
+  void *res = do_mmap(addr, length, writable, reopen, offset);
+  if(res == NULL) {
+    lock_acquire(&filesys_lock);
+    file_close(reopen);
+    lock_release(&filesys_lock);
+    f->R.rax = (uint64_t) MAP_FAILED;
+    return;
+  }
+  f->R.rax = (uint64_t) res;
+
+#else
+  f->R.rax = (uint64_t) MAP_FAILED;
+#endif
+}
+
+static void sys_munmap(struct intr_frame *f){
+#ifdef VM
+  void *addr = (void *)f->R.rdi;
+  if(addr == NULL || pg_ofs(addr)!=0)
+    return;
+  do_munmap(addr);
+#endif
+}
 
 void sys_halt(struct intr_frame *f)
 {
@@ -352,7 +431,6 @@ void sys_read(struct intr_frame *f)
   int fd = f->R.rdi;
   void *buffer = (void *)f->R.rsi;
   unsigned size = f->R.rdx;
-  printf("[sys_read] fd=%d buffer=%p size=%u\n", fd, buffer, size);
 
   // if(size == 0) {
   //   f->R.rax = 0;
@@ -391,7 +469,7 @@ void sys_read(struct intr_frame *f)
   lock_acquire(&filesys_lock);
   int ret = file_read(file, buffer, size);
   lock_release(&filesys_lock);
-  printf("[sys_read] ret=%d\n", ret);
+
 	
   f->R.rax = ret;
 }

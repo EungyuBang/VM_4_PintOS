@@ -5,6 +5,17 @@
 
 struct page;
 enum vm_type;
+typedef int mapid_t;
+
+struct mmap_desc {
+  mapid_t id;				//고유 매핑 ID
+  void *addr;				//매핑 시작 가상 주소
+  size_t length;			//요청한 전체 길이(바이트)
+  size_t page_cnt;			//길이를 PGSIZE 단위로 나눈 값
+  struct file *file;		//매핑과 연결된 파일 객체
+  off_t offset;				//파일 안에서 매핑이 시작된 위치
+  struct list_elem elem;	//쓰레드의 mmap_list에 이 descriptor를 넣기 위한 리스트 노드
+};
 
 struct file_page {
 	/*MOD7*/

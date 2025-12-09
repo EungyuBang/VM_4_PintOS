@@ -11,7 +11,7 @@ typedef int pid_t;
 
 /* Map region identifier. */
 typedef int off_t;
-#define MAP_FAILED ((void *) NULL)
+#define MAP_FAILED ((void *) -1)
 
 /* Maximum characters in a filename written by readdir(). */
 #define READDIR_MAX_LEN 14
