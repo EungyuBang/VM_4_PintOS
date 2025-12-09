@@ -93,7 +93,6 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
-	
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
@@ -114,6 +113,7 @@ struct thread {
 	struct thread *parent;
 	// 10주차 file
 	struct file **fd_table;
+	struct file **fdt;          // struct file 포인터 배열 (FDT)
 	int next_fd;
 	// 10주차 rox
 	struct file *running_file;
@@ -126,6 +126,7 @@ struct thread {
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	void *rsp;
 #endif
 
 	/* Owned by thread.c. */

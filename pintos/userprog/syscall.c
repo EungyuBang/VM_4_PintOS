@@ -125,8 +125,10 @@ exit_with_status(int status) {
 void
 syscall_handler (struct intr_frame *f)
 {
+  thread_current()->rsp = f->rsp;
   /* 시스템 콜 번호는 rax 레지스터에 저장됨 */
   int syscall_num = f->R.rax;
+
   switch (syscall_num)
   {
     case SYS_HALT:    /* Halt the operating system. */
@@ -171,6 +173,14 @@ syscall_handler (struct intr_frame *f)
     case SYS_CLOSE:   /* Close a file. */
       sys_close(f);
       break;
+
+    case SYS_MMAP:
+        f->R.rax = vm_mmap(f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+        break;
+    case SYS_MUNMAP:
+        munmap(f->R.rdi);
+        break;
+
     default:
       /* 미구현 시스템 콜 */
       printf("Unimplemented system call: %d\n", syscall_num);
@@ -179,7 +189,14 @@ syscall_handler (struct intr_frame *f)
   }
 }
 
+// void *
+// mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
+//     return vm_mmap(addr, length, writable, fd, offset); 
+// }
 
+void munmap(void *addr) {
+    do_munmap(addr);
+}
 
 void sys_halt(struct intr_frame *f)
 {

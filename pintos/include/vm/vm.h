@@ -14,6 +14,7 @@ enum vm_type {
 	VM_ANON = 1,
 	/* page that realated to the file */
 	VM_FILE = 2,
+	VM_WRITE = 1 << 3,
 	/* page that hold the page cache, for project 4 */
 	VM_PAGE_CACHE = 3,
 
@@ -39,6 +40,8 @@ struct page_operations;
 struct thread;
 
 #define VM_TYPE(type) ((type) & 7)
+#define VM_WRITABLE 0x100
+#define VM_IS_WRITABLE(type) ((type) & VM_WRITABLE)
 
 /* The representation of "page".
  * This is kind of "parent class", which has four "child class"es, which are
@@ -86,18 +89,10 @@ struct page_operations {
 	enum vm_type type;
 };
 
-struct lazy_load_arg {
-	struct file *file;   /* file pointer (reopened or original) */
-	off_t ofs;           /* offset in file for this page */
-	size_t read_bytes;   /* how many bytes to read from file into page */
-	size_t zero_bytes;   /* remaining bytes to zero */
-	bool writable;       /* page writable? */
-};
-
-#define swap_in(page, v) (page)->operations->swap_in ((page), v)
-#define swap_out(page) (page)->operations->swap_out (page)
-#define destroy(page) \
-	if ((page)->operations->destroy) (page)->operations->destroy (page)
+#define vm_swap_in(page, v) (page)->operations->swap_in ((page), v)
+#define vm_swap_out(page) (page)->operations->swap_out (page)
+#define vm_destroy(page) \
+    if ((page)->operations->destroy) (page)->operations->destroy (page)
 
 /* Representation of current process's memory space.
  * We don't want to force you to obey any specific design for this struct.
@@ -106,7 +101,7 @@ struct supplemental_page_table {
 	struct hash pages; /* 보충 페이지 테이블은 해시 테이블로 구현 */
 };
 
-#include "threads/thread.h"
+#include "threads/thread.h" 
 void supplemental_page_table_init (struct supplemental_page_table *spt);
 bool supplemental_page_table_copy (struct supplemental_page_table *dst,
 		struct supplemental_page_table *src);

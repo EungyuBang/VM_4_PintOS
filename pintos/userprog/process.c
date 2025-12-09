@@ -21,6 +21,7 @@
 #include "threads/synch.h"
 #include "threads/malloc.h"
 #include "lib/string.h"
+#include "lib/stdio.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -780,6 +781,25 @@ validate_segment (const struct Phdr *phdr, struct file *file) {
 	return true;
 }
 
+/* * 현재 스레드의 파일 디스크립터 테이블(FDT)에서 fd에 해당하는 struct file을 반환합니다.
+ * 참고: FDT에 접근하기 위한 락(Lock) 관리가 필요할 수 있습니다. 
+ * mmap 함수는 이미 filesys_lock을 잡고 있지만, 이 함수를 독립적으로 사용하려면 
+ * 락 로직을 추가하는 것을 고려해야 합니다. (여기서는 filesys_lock을 가정)
+ */
+struct file *
+process_get_file (int fd) {
+    struct thread *curr = thread_current();
+    
+    // 1. 유효한 파일 디스크립터 범위인지 확인
+    if (fd < FILE_START_FD || fd >= FDT_SIZE) { 
+        return NULL;
+    }
+    
+    // 2. 파일 디스크립터 테이블에서 struct file 포인터를 반환
+    // curr->fdt가 초기화(calloc)되어 있다고 가정합니다.
+    return curr->fdt[fd]; 
+}
+
 #ifndef VM
 /* Codes of this block will be ONLY USED DURING project 2.
  * If you want to implement the function for whole project 2, implement it
@@ -809,8 +829,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
     ASSERT (pg_ofs (upage) == 0);
     ASSERT (ofs % PGSIZE == 0);
 
-    // 🚩 수정: file_seek을 제거합니다. Lazy Loading은 offset 기반 I/O를 사용해야 합니다.
-    // file_seek (file, ofs); 
     
     while (read_bytes > 0 || zero_bytes > 0) {
         /* Do calculate how to fill this page. */
@@ -818,7 +836,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
         size_t page_zero_bytes = PGSIZE - page_read_bytes;
         
         /* 1. aux 구조체 동적 할당: 페이지 로딩 정보 저장 */
-        struct lazy_load_arg *arg = calloc(1, sizeof(struct lazy_load_arg));
+        struct vm_load_arg *arg = calloc(1, sizeof(struct vm_load_arg));
         if (arg == NULL)
             return false;
 
@@ -889,53 +907,54 @@ setup_stack (struct intr_frame *if_) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
-static bool
+bool
 lazy_load_segment (struct page *page, void *aux) {
-	/* TODO: Load the segment from the file */
-	/* TODO: This called when the first page fault occurs on address VA. */
-	/* TODO: VA is available when calling this function. */
+    /* aux는 vm_alloc_page_with_initializer에 의해 할당된 file_page 구조체의 포인터입니다. */
+    if (aux == NULL) {
+        return true; 
+    }
 
-	struct lazy_load_arg *arg = (struct lazy_load_arg *) aux;
-	if(page == NULL || arg == NULL)
-		return false;
+    // 1. 구조체 타입 변경 및 포인터 획득
+    struct file_page *f_page_aux = (struct file_page *) aux;
+    
+    // 페이지나 프레임이 할당되지 않은 상태라면 비정상
+    if(page == NULL || page->frame == NULL)
+        goto fail;
 
-	/* 이 페이지를 지원하는 프레임은 이미 VM 시스템에 의해 할당되어야 합니다
-	페이지가 청구되었을 때 커널 가상 주소를 가져옵니다. */
-	void *kva = page->frame->kva;
+    /* 이 페이지를 지원하는 프레임의 커널 가상 주소를 가져옵니다. */
+    void *kva = page->frame->kva;
 
-	/* arg->ofs 파일에서 kva 로 read_bytes 읽기 */
-	if(arg->read_bytes > 0) {
-		off_t did_read = file_read_at(arg->file, kva, arg->read_bytes, arg->ofs);
-		if(did_read != (off_t)arg->read_bytes) {
-			goto fail_clean; // 읽기 실패 시 정리
-		}
-	}
+    // 2. 파일에서 데이터를 읽어옴
+    if(f_page_aux->page_read_bytes > 0) {
+        // [수정된 이름 반영]: f_page_aux->offset, f_page_aux->page_read_bytes
+        off_t did_read = file_read_at(f_page_aux->file, kva, 
+                                      f_page_aux->page_read_bytes, f_page_aux->offset);
+        
+        if(did_read != (off_t)f_page_aux->page_read_bytes) {
+            goto fail; // 읽기 실패 시 정리
+        }
+    }
 
-	/* Zero the remainder */
-	if(arg->zero_bytes > 0) {
-		memset((uint8_t *)kva + arg->read_bytes, 0, arg->zero_bytes);
-	}
+    // 3. 남은 부분을 0으로 채움
+    if(f_page_aux->zero_bytes > 0) {
+        memset((uint8_t *)kva + f_page_aux->page_read_bytes, 0, f_page_aux->zero_bytes);
+    }
 
-	/* 페이지가 writable이면 page 구조체에 반영(만약 필요하면) */
-	page->writable = arg->writable;
+    return true; // 성공
 
-	/* aux 메모리 해제 */
-	free(arg);
-
-	return true;
-
-/* 
-file_read_at 실패 시 page->frame->kva와 page 구조체 정리는
-    // 이 함수 밖(caller)에서 처리하는 것이 일반적입니다. 
-    // 여기서는 할당했던 arg만 정리합니다.
-*/
-	fail_clean:
-		if(arg != NULL) {
-			free(arg);
-		}
-	// vm_do_claim_page에서 swap_in(lazy_load_segment)의 반환값(false)을 보고 
-    // page 테이블 매핑 해제와 vm_free_frame을 호출해야 합니다.
-		return false;
+fail:
+    // 5. 실패 시 자원 정리 (파일 닫기 누락 수정)
+    if(f_page_aux != NULL) {
+        // file_reopen으로 열었던 파일 포인터를 닫습니다. (누락된 부분)
+        if (f_page_aux->file != NULL) {
+            file_close(f_page_aux->file);
+        }
+        // aux 구조체 메모리 해제
+        free(f_page_aux);
+    }
+    
+    // vm_do_claim_page가 'false'를 보고 페이지 테이블 매핑 해제와 vm_free_frame을 처리합니다.
+    return false;
 }
 
 /* Loads a segment starting at offset OFS in FILE at address
@@ -954,54 +973,52 @@ file_read_at 실패 시 page->frame->kva와 page 구조체 정리는
  * or disk read error occurs. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
-		uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
-	ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
-	ASSERT (pg_ofs (upage) == 0);
-	ASSERT (ofs % PGSIZE == 0);
+        uint32_t read_bytes, uint32_t zero_bytes, bool writable) {
+    ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+    ASSERT (pg_ofs (upage) == 0);
+    ASSERT (ofs % PGSIZE == 0);
 
-	while (read_bytes > 0 || zero_bytes > 0) {
-		/* Do calculate how to fill this page.
-		 * We will read PAGE_READ_BYTES bytes from FILE
-		 * and zero the final PAGE_ZERO_BYTES bytes. */
-		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
-		size_t page_zero_bytes = PGSIZE - page_read_bytes;
+    while (read_bytes > 0 || zero_bytes > 0) {
+        /* Do calculate how to fill this page.
+         * We will read PAGE_READ_BYTES bytes from FILE
+         * and zero the final PAGE_ZERO_BYTES bytes. */
+        size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+        size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-				/* aux 구조체 동적 할당: 페이지별로 별도의 aux를 만듦 */
-		struct lazy_load_arg *arg = calloc(1,sizeof(struct lazy_load_arg));
-		if(arg == NULL)
-			return false;
+        /* aux 구조체 동적 할당: 페이지별로 별도의 aux를 만듦 */
+        // **[수정]**: vm_load_arg 대신 file_page 구조체를 aux로 사용
+        struct file_page *f_page_aux = calloc(1, sizeof(struct file_page));
+        if(f_page_aux == NULL)
+            return false;
 
-		/* file 재사용시 race가 우려되면 file_reopen 사용.
-		file_read_at은 offset 기반이므로 file 포인터 공유해도 동작하지만,
-		안전하게 각 페이지마다 파일을 reopen 하는 것이 흔한 방법입니다. */
-		arg->file = file_reopen(file);
-		if(arg->file == NULL) {
-			free(arg);
-			return false;
-		}
+        f_page_aux->file = file_reopen(file);
+        if(f_page_aux->file == NULL) {
+            free(f_page_aux);
+            return false;
+        }
 
-		arg->ofs = ofs;
-		arg->read_bytes = page_read_bytes;
-		arg->zero_bytes = page_zero_bytes;
-		arg->writable = writable;
+        // **[수정]**: vm_load_arg 멤버 이름 대신 file_page 멤버 이름 사용
+        f_page_aux->offset = ofs;
+        f_page_aux->page_read_bytes = page_read_bytes;
+        f_page_aux->zero_bytes = page_zero_bytes;
+        f_page_aux->writable = writable; // writable 속성도 aux에 저장
 
-		/* VM_? 타입(실행파일) 페이지로 등록하고 lazy loader 지정 */
-		if (!vm_alloc_page_with_initializer (VM_FILE, upage, writable,
-					lazy_load_segment, arg)) {
-			/* 실패 시 할당한 것 정리 */
-			file_close(arg->file);
-			free(arg);
-			return false;
-		}
+        /* VM_FILE 타입(실행파일) 페이지로 등록하고 lazy loader 지정 */
+        if (!vm_alloc_page_with_initializer (VM_FILE, upage, writable,
+                    lazy_load_segment, f_page_aux)) {
+            /* 실패 시 할당한 것 정리 */
+            file_close(f_page_aux->file);
+            free(f_page_aux);
+            return false;
+        }
 
-
-		/* Advance. */
-		ofs += page_read_bytes;
-		read_bytes -= page_read_bytes;
-		zero_bytes -= page_zero_bytes;
-		upage += PGSIZE;
-	}
-	return true;
+        /* Advance. */
+        ofs += page_read_bytes;
+        read_bytes -= page_read_bytes;
+        zero_bytes -= page_zero_bytes;
+        upage += PGSIZE;
+    }
+    return true;
 }
 
 /* Create a PAGE of stack at the USER_STACK. Return true on success. */

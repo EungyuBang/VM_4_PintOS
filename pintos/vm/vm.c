@@ -9,20 +9,22 @@
 #include "threads/vaddr.h"
 #include "threads/palloc.h"
 #include "threads/synch.h"
+#include "threads/vaddr.h"
 
 #define USER_STACK (void *)0x47480000 // Pintos 스택의 최상단 주소 (0xc0000000 또는 0x47480000 근처)
-#define STACK_LIMIT (USER_STACK - (1 << 23)) // 8MB 경계
+#define STACK_LIMIT (USER_STACK - (1 << 20)) // 8MB 경계
 
+static struct list_elem *clock_hand;
 static struct lock frame_table_lock; //프레임 테이블 접근 동기화
 static struct list frame_table; //물리 메모리 프레임의 메타데이터를 관리하는 테이블
 
 static unsigned page_hash (const struct hash_elem *e, void *aux);
 static bool page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux);
-static void page_destroy(struct hash_elem *e, void *aux);
+static void page_vm_destroy(struct hash_elem *e, void *aux);
 void vm_free_frame (struct frame *frame);
 
 static bool is_valid_stack_access (void *addr, void *rsp);
-static bool vm_stack_grow (void *fault_addr);
+static bool vm_stack_growth (void *fault_addr);
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -66,60 +68,57 @@ static struct frame *vm_evict_frame (void);
  * `vm_alloc_page`. */
 bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
-		vm_initializer *init, void *aux) {
+        vm_initializer *init, void *aux) {
 
-	ASSERT (VM_TYPE(type) != VM_UNINIT)
+    ASSERT (VM_TYPE(type) != VM_UNINIT)
 
-	struct supplemental_page_table *spt = &thread_current ()->spt;
+    struct supplemental_page_table *spt = &thread_current ()->spt;
 
-	/* Check wheter the upage is already occupied or not. */
-	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: Create the page, fetch the initialier according to the VM type,
-		 * TODO: and then create "uninit" page struct by calling uninit_new. You
-		 * TODO: should modify the field after calling the uninit_new. */
+    /* Check wheter the upage is already occupied or not. */
+    if (spt_find_page (spt, upage) == NULL) {
+        //새 페이지 구조체 할당
+        struct page *page = (struct page *)calloc(1, sizeof(struct page));
+        if (page == NULL)
+            goto err;
+        
+        //vm 타입에 따라 initializer 선택
+        bool (*page_initializer)(struct page *, enum vm_type, void *);
 
-		/* TODO: Insert the page into the spt. */
-		//새 페이지 구조체 할당
-		//calloc = malloc + memset(ptr, 0, size)
-		//여기선 예기치 않은 쓰레기값을 원천 차단해준다.
-		struct page *page = (struct page *)calloc(1, sizeof(struct page));
-		if (page == NULL)
-			goto err;
-		
-		//vm 타입에 따라 initializer 선택
-		bool (*page_initializer)(struct page *, enum vm_type, void *);
+        switch (VM_TYPE(type)) {
+            case VM_ANON:
+                page_initializer = anon_initializer;
+                break;
+            case VM_FILE:
+                page_initializer = file_backed_initializer;
+                break;
+            default:
+                free(page);
+                goto err;
+        }
 
-		switch (VM_TYPE(type)) {
-			//익명 페이지용(스택, 힙)
-			case VM_ANON:
-				page_initializer = anon_initializer;
-				break;
-			//파일 기반 페이지용(실행파일)
-			case VM_FILE:
-				page_initializer = file_backed_initializer;
-				break;
-			default:
-				free(page);
-				goto err;
-		}
+        //uninit 페이지 생성
+        uninit_new(page, upage, init, type, aux, page_initializer);
 
-		//uninit 페이지 생성
-		uninit_new(page, upage, init, type, aux, page_initializer);
+        //writable 설정
+        page->writable = writable;
 
-		//writable 설정
-		page->writable = writable;
+        //SPT에 삽입
+        if(!spt_insert_page(spt, page)) {
+            // 파일 닫기 및 aux 해제 (원래 코드 유지):
+            if (VM_TYPE(page->uninit.type) == VM_FILE) {
+                struct file_page *f_page = (struct file_page *)page->uninit.aux;
+                if (f_page->file != NULL) file_close(f_page->file);
+            }
+            if (page->uninit.aux != NULL) free(page->uninit.aux);
+        
+            vm_dealloc_page(page); 
+            goto err;
+        }
 
-		//SPT에 삽입
-		if(!spt_insert_page(spt, page)) {
-			// free(page);
-			vm_dealloc_page(page); //누수 발생할 수도 있으니 안전하게 수정
-			goto err;
-		}
-
-		return true;
-	}
+        return true;
+    }
 err:
-	return false;
+    return false;
 }
 
 /* Find VA from spt and return page. On error, return NULL. */
@@ -144,31 +143,92 @@ spt_insert_page (struct supplemental_page_table *spt,
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
-	if (hash_delete(&spt->pages, &page->hash_elem) == NULL) {
-        // 항목이 없으면 문제가 있지만, 일단 진행
-    }
+	struct hash_elem *deleted_elem = hash_delete(&spt->pages, &page->hash_elem);
     
-    // 2. 페이지 자원 해제 (destroy 및 free)
-    vm_dealloc_page (page);
+    // 제거할 항목이 SPT에 없었으면 vm_dealloc_page를 호출하지 않고 종료합니다.
+    if (deleted_elem == NULL) {
+        return;
+    }
+	vm_dealloc_page (page);
 }
 
 /* Get the struct frame, that will be evicted. */
 static struct frame *
 vm_get_victim (void) {
-	struct frame *victim = NULL;
-	 /* TODO: The policy for eviction is up to you. */
+    struct frame *victim = NULL;
+    
+    lock_acquire(&frame_table_lock);
+    
+    if (list_empty(&frame_table)) {
+        goto done; // 프레임 테이블이 비어있으면 종료
+    }
 
-	return victim;
+    // 시계 바늘 초기화: 리스트의 끝을 가리키거나 NULL이면 시작 지점으로 돌립니다.
+    if (clock_hand == NULL || clock_hand == list_end(&frame_table)) {
+        clock_hand = list_begin(&frame_table);
+    }
+    
+    // Clock 알고리즘 순회 (희생자를 찾을 때까지 반복)
+    while (true) {
+        // 1. 현재 시계 바늘이 가리키는 프레임 구조체 획득
+        struct frame *f = list_entry(clock_hand, struct frame, elem);
+        struct page *p = f->page;
+
+        // 2. 다음 위치로 시계 바늘 이동 (순환 구조)
+        clock_hand = list_next(clock_hand);
+        if (clock_hand == list_end(&frame_table)) {
+            clock_hand = list_begin(&frame_table); // 리스트 끝에 도달하면 시작으로 돌아감
+        }
+
+        // 3. 페이지가 프레임에 연결되어 있지 않다면 건너뜀 (이미 해제된 프레임일 수 있음)
+        if (p == NULL) {
+            continue;
+        }
+        
+        if (pml4_is_accessed(thread_current()->pml4, p->va)) {
+            // R = 1 인 경우 (접근됨): 두 번째 기회 부여
+            
+            // 접근 비트를 0 (Accessed = false)으로 설정
+            pml4_set_accessed(thread_current()->pml4, p->va, false);
+        } 
+        else {
+            // R = 0 인 경우 (접근 안 됨): 희생자 선정
+            victim = f;
+            break; // 희생자 발견, 루프 종료
+        }
+    }
+
+done:
+    lock_release(&frame_table_lock);
+    
+    return victim;
 }
 
-/* Evict one page and return the corresponding frame.
- * Return NULL on error.*/
+/* Evict one page and return the corresponding frame. */
 static struct frame *
 vm_evict_frame (void) {
-	struct frame *victim UNUSED = vm_get_victim ();
-	/* TODO: swap out the victim and return the evicted frame. */
+    struct frame *victim = vm_get_victim ();
+    
+    if (victim == NULL || victim->page == NULL) {
+        return NULL;
+    }
 
-	return NULL;
+    struct page *page = victim->page;
+    struct thread *curr = thread_current();
+
+    // 2. 페이지의 swap_out 핸들러 호출
+    // VM_FILE 페이지는 file_backed_swap_out, VM_ANON 페이지는 anon_swap_out 호출
+    if (!page->operations->swap_out(page)) {
+        // swap_out 실패 시, 이 프레임을 쫓아낼 수 없으므로 NULL 반환
+        return NULL;
+    }
+
+	if (pml4_get_page(curr->pml4, page->va) != NULL) { // 현재 스레드에 매핑되어 있을 경우만
+         pml4_clear_page(curr->pml4, page->va);
+    }
+    
+    // 3. victim 프레임 반환 (이 프레임은 vm_get_frame에서 재활용됩니다.)
+    return victim;
 }
 
 /* palloc() and get frame. If there is no available page, evict the page
@@ -192,6 +252,7 @@ vm_get_frame (void) {
 
         kva = frame->kva;
 		is_new_frame = false; 
+		frame->page = NULL;
     }
 	else {
 		frame = (struct frame *)calloc(1, sizeof(struct frame));
@@ -216,84 +277,61 @@ vm_get_frame (void) {
 	return frame;
 }
 
-/* Growing the stack. */
-static void
-vm_stack_growth (void *addr UNUSED) {
-	void *stack_bottm = pg_round_down(addr);
-
-	vm_alloc_page(VM_ANON | VM_MARKER_0, stack_bottm, true);
-}
-
 /* Handle the fault on write_protected page */
 static bool
 vm_handle_wp (struct page *page UNUSED) {
 	return false;
 }
 
-/* Return true on success */
-bool
-vm_try_handle_fault (struct intr_frame *f, void *addr,
-        bool user UNUSED, bool write, bool not_present) {
+bool 
+vm_try_handle_fault(struct intr_frame *f UNUSED, void *addr UNUSED,
+                         bool user UNUSED, bool write UNUSED, bool not_present UNUSED)
+{
+    struct supplemental_page_table *spt UNUSED = &thread_current()->spt;
+    struct page *page = NULL;
     
-    // 1. 초기 유효성 검사: NULL 주소이거나 사용자 주소 범위를 벗어난 경우 (커널 접근 포함)
-    if (addr == NULL || !is_user_vaddr(addr)) {
+    if (addr == NULL)
         return false;
-    }
 
-    void *fault_addr = pg_round_down(addr);
-    struct supplemental_page_table *spt = &thread_current ()->spt;
-    
-    // 2. not_present == false인 경우: 페이지는 존재하지만 권한 문제
-    if(!not_present) {
-        // SPT에서 해당 페이지를 찾아 쓰기 권한이 있는지 확인
-        struct page *exist_page = spt_find_page(spt, fault_addr);
+    if (is_kernel_vaddr(addr))
+        return false;
+
+	if (not_present) 
+    {
+        void *rsp_on_stack = (user ? f->rsp : thread_current()->rsp);
+        page = spt_find_page(spt, addr);
         
-        // 페이지가 SPT에 있고, 쓰기 접근이며, 쓰기가 불가능한 경우 -> 권한 오류
-        if (exist_page && write && !exist_page->writable) return false;
-        
-        // 그 외의 권한 오류는 비정상적인 폴트이므로 false 반환
-        return false; 
-    }
-
-    // not_present == true 인 경우 (물리 페이지 부재)
-    struct page *page = spt_find_page(spt, fault_addr);
-
-    // 3. 페이지가 SPT에 없는 경우 (스택 성장 시도)
-    if(page == NULL) {
-        // 💡 핵심 수정 부분: 스택 성장 조건 확인
-        if (is_valid_stack_access(addr, f->rsp) && vm_stack_grow(fault_addr)) {
-            // 성장 성공 시, SPT에서 페이지를 다시 찾고 claim 시도
-            page = spt_find_page(spt, fault_addr);
-            if (page) {
-                return vm_do_claim_page(page);
+        //조건문통합
+		if (page == NULL) {
+            printf("3");
+            if (addr >= STACK_LIMIT && addr <= USER_STACK) {
+                printf("4");
+               if (addr >= rsp_on_stack - 8 && addr < (void *)USER_STACK) {
+                    if (vm_stack_growth(addr)) { 
+                        page = spt_find_page(spt, addr);
+                        if (page != NULL) {
+                             return vm_do_claim_page(page);
+                        }
+                    }
+                }
             }
+            return false; 
         }
-        // 스택 성장이 불가능하거나 실패한 경우
-        return false;
-    }
+        printf("5");
+        if (write && !page->writable)
+            return false;
 
-    // 4. 페이지가 SPT에 있는 경우 (지연 로딩)
-    
-    // 쓰기 보호 페이지 처리 (지연 로딩 페이지의 권한 검사)
-    if(write && !page->writable) {
-        return false;
+        return vm_do_claim_page(page);
     }
-	
-	if (!vm_do_claim_page (page)) {
-        // 🚨 Claim 실패 시, SPT에서 해당 페이지를 제거합니다.
-        // 이는 로드 실패나 swap_in 실패 시 발생한 불완전한 페이지 항목을 정리합니다.
-        spt_remove_page (spt, page); // spt_remove_page는 내부적으로 vm_dealloc_page를 호출해야 함
-        return false; 
-    }
-    
-    return true; // Claim 성공
+    printf("6");
+    return false;
 }
 
 /* Free the page.
  * DO NOT MODIFY THIS FUNCTION. */
 void
 vm_dealloc_page (struct page *page) {
-	destroy (page);
+	vm_destroy (page);
 	free (page);
 }
 
@@ -334,15 +372,16 @@ vm_do_claim_page (struct page *page) {
 	}
 
 	// 페이지 내용 로드 (UNINIT -> ANON/FILE)
-    if (!swap_in(page, frame->kva)) {
-        // swap_in 실패 시: 매핑 제거 및 프레임 정리 (Clean Up)
+    if (!vm_swap_in(page, frame->kva)) {
+        // printf("7");
+        // vm_swap_in 실패 시: 매핑 제거 및 프레임 정리 (Clean Up)
         pml4_clear_page(curr->pml4, page->va);
         frame->page = NULL;
         page->frame = NULL;
         vm_free_frame(frame);
         return false;
     }
-
+    // printf("8");
     return true;
 }
 
@@ -377,14 +416,15 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
             // VM_FILE 타입인 경우에만 aux 구조체를 깊은 복사하고 file_reopen
             if (VM_TYPE(uninit->type) == VM_FILE && uninit->aux != NULL) {
                 
-                // VM_FILE의 aux 구조체를 복사하여 파일 포인터 독립성 확보 (exec-once 통과 핵심)
-                struct lazy_load_arg *src_aux = uninit->aux;
-                struct lazy_load_arg *dst_aux = NULL;
+                // VM_FILE의 aux 구조체를 복사하여 파일 포인터 독립성 확보 (file_page 사용)
+                struct file_page *src_aux = uninit->aux; // 이전의 vm_load_arg 역할
+                struct file_page *dst_aux = NULL;
 
-                dst_aux = (struct lazy_load_arg *)calloc(1, sizeof(struct lazy_load_arg));
+                dst_aux = (struct file_page *)calloc(1, sizeof(struct file_page));
                 if (dst_aux == NULL) goto fail;
 
-                memcpy (dst_aux, src_aux, sizeof(struct lazy_load_arg));
+                // file_page 내용을 복사
+                memcpy (dst_aux, src_aux, sizeof(struct file_page));
    
                 // ★ 독립적인 파일 포인터 할당
                 dst_aux->file = file_reopen(src_aux->file); 
@@ -408,7 +448,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
             {
                 if (aux_copied) {
                     // 실패 시 파일 포인터 및 aux 메모리 정리
-                    file_close(((struct lazy_load_arg *)aux)->file);
+                    file_close(((struct file_page *)aux)->file); // file_page 타입으로 캐스팅
                     free (aux);
                 }
                 goto fail;
@@ -420,6 +460,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
         } 
         
         /* 2. 🗃️ ANON 페이지 (이미 로드됨) 처리 (Deep Copy) */
+        // ... (VM_ANON 페이지 처리는 변경 없음) ...
         else {
             // VM_ANON 페이지 또는 로드된 VM_FILE 페이지를 Deep Copy합니다.
             
@@ -428,27 +469,36 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
                 goto fail;
             }
 
+            struct page *dst_page = spt_find_page (dst, upage);
+            if (dst_page == NULL) {
+                goto fail; 
+            }
+
             // 2. 페이지에 프레임 할당 및 매핑 (Claim)
-            // vm_do_claim_page는 thread_current()->spt를 사용하므로, 
-            // 현재 부모 스레드의 SPT에 upage가 없는 경우 실패할 수 있습니다.
-            // 그러나 Deep Copy 로직에서는 이 Claim이 성공해야 복사를 진행할 수 있습니다.
-            if (!vm_claim_page (upage)) {
+            struct frame *dst_frame = vm_get_frame();
+            if (dst_frame == NULL) {
+                goto fail;
+            }
+            dst_page->frame = dst_frame;
+            dst_frame->page = dst_page;
+
+            // b. 자식의 PML4에 매핑 
+            if (!pml4_set_page(thread_current()->pml4, dst_page->va, dst_frame->kva, dst_page->writable)) {
+                vm_free_frame(dst_frame); // 정리
                 goto fail;
             }
 
-            // 3. 자식 SPT에서 방금 만든 페이지 찾아옴
-            struct page *dst_page = spt_find_page (dst, upage);
-            
-            // 4. 부모 페이지가 실제 프레임을 가졌는지 확인
-            if (dst_page == NULL || src_page->frame == NULL) {
-                 // 부모가 Swapped Out된 경우, Deep Copy를 시도할 수 없으므로 실패 처리.
-                 // (Swapped Out 페이지를 복사하지 않고 넘어가는 로직을 원하면 continue로 변경해야 함)
-                 if (src_page->frame == NULL) continue; // <- Swapped Out 페이지 복사 생략
-                 goto fail;
+            // c. 부모 페이지가 실제 프레임을 가졌는지 확인
+            struct frame *src_frame = src_page->frame;
+            if (src_frame == NULL) {
+                // 부모가 Swapped Out된 경우: Claim 실패 처리 후 정리 (혹은 continue 처리)
+                pml4_clear_page(thread_current()->pml4, dst_page->va);
+                vm_free_frame(dst_frame);
+                goto fail; 
             }
 
-            // 5. 부모 페이지의 내용(kva 물리프레임)을 자식 페이지로 복사 (Deep Copy)
-            memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+            // 4. 부모 페이지의 내용(kva 물리프레임)을 자식 페이지로 복사 (Deep Copy)
+            memcpy (dst_frame->kva, src_frame->kva, PGSIZE);
             continue;
         }
     }
@@ -466,7 +516,7 @@ supplemental_page_table_kill (struct supplemental_page_table *spt) {
 if (spt == NULL)
 		return;
 
-	hash_clear(&spt->pages, page_destroy);
+	hash_clear(&spt->pages, page_vm_destroy);
 	// free(spt->pages.buckets);
 }
 
@@ -488,7 +538,7 @@ page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
 }
 
 static void
-page_destroy (struct hash_elem *e, void *aux) {
+page_vm_destroy (struct hash_elem *e, void *aux) {
     struct page *page = hash_entry (e, struct page, hash_elem);
 
     if (page->operations->type == VM_UNINIT) {
@@ -496,11 +546,12 @@ page_destroy (struct hash_elem *e, void *aux) {
         
         if (VM_TYPE (uninit->type) == VM_FILE && uninit->aux != NULL) {
             
-            // aux 포인터를 lazy_load_arg 구조체로 캐스팅하여 파일 자원에 접근
-            struct lazy_load_arg *lla = (struct lazy_load_arg *)uninit->aux;
+            // aux 포인터를 file_page 구조체로 캐스팅하여 파일 자원에 접근
+            struct file_page *f_page = (struct file_page *)uninit->aux; // 이전의 vm_load_arg 역할
+            
             // 1. 파일 자원을 닫습니다 (파일 포인터 누수 방지).
-            if (lla->file != NULL) {
-                file_close(lla->file);
+            if (f_page->file != NULL) {
+                file_close(f_page->file);
             }
             
             // 2. aux 구조체 메모리 해제.
@@ -511,10 +562,9 @@ page_destroy (struct hash_elem *e, void *aux) {
         }
     }
 
-    // 페이지 구조체 자체와 타입별 자원 정리 (destroy + free)
+    // 페이지 구조체 자체와 타입별 자원 정리 (vm_destroy + free)
     vm_dealloc_page (page); 
 }
-
 /* Free the frame. */
 void
 vm_free_frame (struct frame *frame) {
@@ -547,39 +597,37 @@ is_valid_stack_access (void *addr, void *rsp) {
         return false;
     }
 
-    // 2. 폴트 주소(addr)는 현재 스택 포인터(rsp)를 기준으로 유효한 범위 내에 있어야 합니다.
-    
-    // **경계 조건 완화**: 'rsp - 8' 대신, 'addr'이 현재 RSP보다 '훨씬' 아래에 있지 않다면 허용.
-    // 시스템 콜 중 폴트가 발생했을 경우, f->rsp는 사용자 스택 포인터 바로 위를 가리킬 수 있습니다.
-    
-    // 💡 (rsp - 8) 조건 대신, 유효한 스택 포인터 근처인지 확인하는 일반적인 로직 사용:
-    // f->rsp가 USER_STACK 주소에 가까우면 (시스템 콜 직후), rsp와 addr의 차이가 크지 않아야 함.
-    
-    // 현재 코드의 'addr < rsp - 8'은 유효한 접근도 차단할 수 있습니다.
-    // 대부분의 Pintos VM에서는 단순히 addr이 rsp보다 '훨씬' 낮지 않고, 8MB 경계 안에 있으면 허용합니다.
-    
-    // 💡 가장 보수적이고 안전한 조건으로 대체:
-    // 폴트 주소(addr)가 현재 RSP보다 아래에 있고, 그 차이가 1 페이지(4096) 이내라면 스택으로 간주하는 방식도 사용됩니다.
-    
-    // 현재는 원래 논리를 유지하되, 주석 처리된 부분을 통해 원인을 이해하세요.
-    // if (addr < rsp - 8) {
-    //     // addr이 rsp보다 8바이트 이상 낮으면 잘못된 접근으로 간주
-    //     return false;
-    // }
-
     return true;
 }
 
+/*
+ * Increases the stack size by allocating one or more anonymous pages so that addr is no longer a faulted address.
+ * Limits the stack size to 1MB at maximum.
+ */
 static bool
-vm_stack_grow (void *fault_addr) {
-    // struct page *p 선언을 제거하고, 함수의 반환 값(bool)을 바로 사용합니다.
-    bool success = vm_alloc_page_with_initializer(
-        VM_ANON | VM_MARKER_0,
-        fault_addr,
-        true, 
-        NULL, 
-        NULL
-    );
-
-    return success;
+vm_stack_growth (void *addr) {
+    void *stack_bottom = pg_round_down(addr);
+    
+    // 1. 최대 스택 한도 검사
+    if (stack_bottom < STACK_LIMIT) {
+        return false;
+    }
+    
+    // 2. 새 스택 페이지 (VM_ANON 타입, 쓰기 가능) 할당
+    // VM_MARKER_0 (== VM_WRITABLE)을 사용하여 쓰기 가능 플래그를 설정합니다.
+    if (!vm_alloc_page_with_initializer(VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL)) {
+        return false;
+    }
+    
+    // 3. 페이지 클레임 (물리 메모리 할당 및 매핑)
+    if (!vm_claim_page(stack_bottom)) {
+        // 클레임 실패 시, 할당된 SPT 항목을 정리해야 합니다.
+        struct page *page_to_kill = spt_find_page(&thread_current()->spt, stack_bottom);
+        if (page_to_kill) {
+            spt_remove_page(&thread_current()->spt, page_to_kill);
+        }
+        return false;
+    }
+    
+    return true;
 }
