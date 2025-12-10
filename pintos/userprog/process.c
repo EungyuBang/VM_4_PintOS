@@ -390,6 +390,7 @@ process_exit (void) {
 		cur_thread->fd_table = NULL;
 	 }
 	
+	process_cleanup ();
 	// 📌 수정 부분
 	// 10주차 rox
 	 if (cur_thread->running_file != NULL) {
@@ -423,7 +424,7 @@ process_exit (void) {
 		sema_down(&cur_thread->exit_sema); // 부모가 처리할 때까지 대기 -> 이후 깨어나면 밑에 process_cleanup 만나서 즉사 
 	 }
 
-	process_cleanup ();
+	//process_cleanup ();
 }
 
 /* Free the current process's resources. */

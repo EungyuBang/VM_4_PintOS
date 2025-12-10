@@ -18,7 +18,6 @@ struct mmap_desc {
 };
 
 struct file_page {
-	/*MOD7*/
 	/* 파일 매핑 정보를 유지할 필드를 정의한다. */
 	struct file *file;		//매핑 대상 파일
 	off_t offset;			//파일 내 시작 오프셋

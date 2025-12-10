@@ -240,10 +240,12 @@ fail:
 void
 do_munmap (void *addr) {
     struct thread *cur = thread_current ();
+
     struct mmap_desc *desc = mmap_find_desc (cur, addr);
     if (desc == NULL)
         return;
 
+	//매핑된 모든 페이지를 SPT에서 제거
     for (size_t i = 0; i < desc->page_cnt; i++) {
         void *page_addr = (uint8_t *) desc->addr + i * PGSIZE;
         struct page *page = spt_find_page (&cur->spt, page_addr);
